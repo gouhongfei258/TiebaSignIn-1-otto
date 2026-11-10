@@ -1,5 +1,5 @@
 <div align="center"> 
-<h1 align="center">贴吧签到助手（PushPlus版）</h1>
+<h1 align="center">多站签到助手（贴吧 / 精易 / 看雪 / 恩山）</h1>
 <img src="https://img.shields.io/github/issues/srcrs/TiebaSignIn?color=green">
 <img src="https://img.shields.io/github/stars/srcrs/TiebaSignIn?color=yellow">
 <img src="https://img.shields.io/github/forks/srcrs/TiebaSignIn?color=orange">
@@ -9,50 +9,86 @@
 
 # 简介
 
-用的是手机端的接口，签到经验更多，用户只需要填写`BDUSS`即可，每日自动帮你签到，最多支持`200`个贴吧签到。
+在原有贴吧签到的基础上，扩展成多站点签到工具：一次运行，依次完成**百度贴吧、精易论坛、看雪论坛、恩山论坛**的签到，并把汇总结果推送到微信。
 
-# 功能
+所有站点都只需要填写浏览器里已有的登录凭证（`BDUSS` 或 `Cookie`），不需要账号密码，也不需要打码平台。
 
-+ 贴吧签到(最多支持 200 个)
+# 支持站点
 
-+ 支持推送运行结果至微信(通过 server 酱)
+| 站点 | 需要的凭证 | 签到方式 |
+|-|-|-|
+| 百度贴吧 | `BDUSS` | 手机端接口，最多 200 个贴吧 |
+| 精易论坛 `bbs.ijingyi.com` | `JINGYI_COOKIE` | Discuz + dsu_paulsign 签到插件 |
+| 看雪论坛 `bbs.kanxue.com` | `KANXUE_COOKIE`（可选 `KANXUE_CSRF`） | `user-signin.htm` 接口 |
+| 恩山论坛 `www.right.com.cn` | `ENSHAN_COOKIE` | Discuz + erling_qd 签到插件（含 WAF 处理） |
+
+只配置其中一部分也可以，未配置的站点会自动跳过。
 
 # 使用方法
 
-## 1.fork本项目
+## 1. fork 本项目
+
 ### 必须检查的仓库设置
 
 1. Settings -> Actions -> General -> Workflow permissions：选择 "Read and write permissions"（以允许 GITHUB_TOKEN push）。
 
 2. 确保仓库没有被 Archived（Settings -> General -> Danger Zone: Archive repository）。
 
-## 2.获取BDUSS
+## 2. 准备各站点凭证
 
-在网页中登录上贴吧，然后按下`F12`打开调试模式，在`cookie`中找到`BDUSS`，并复制其`Value`值。
+### 百度贴吧 BDUSS
+
+在网页中登录上贴吧，然后按下 `F12` 打开调试模式，在 `cookie` 中找到 `BDUSS`，并复制其 `Value` 值。
 
 ![](./assets/获取BDUSS.gif)
 
-## 3.将BDUSS添加到仓库的Secrets中
+### 精易论坛 Cookie
 
-Name | Value
--|-
-BDUSS | xxxxxxxxxxx
+浏览器登录 `https://bbs.ijingyi.com/`，`F12` -> Network -> 任意请求的 Request Headers，复制整条 `Cookie`。
 
-将上一步骤获取到的`BDUSS`粘贴到`Secrets`中
+> 站点登录需要过极验滑块，所以这里不做账号密码登录，直接复用浏览器里的登录态。
+> 只要页面右上角还能看到「退出」，Cookie 就是有效的。
 
-![](./assets/添加BDUSS.gif)
+### 看雪论坛 Cookie
 
-## 4.开启actions
+浏览器登录 `https://bbs.kanxue.com/`，同样复制整条 `Cookie`（关键是 `bbs_sid`、`bbs_token` 等）。
 
-默认`actions`是处于禁止的状态，需要手动开启。
+`csrf_token` 一般是自动获取的：签到接口会自己读页面。如果推送提示 `csrf_token 校验失败`，再手动补一个：
+
+1. 登录后打开签到页面，`F12` -> Elements，搜索 `csrf_token`；
+2. 把它的值填到 Secrets 的 `KANXUE_CSRF`。
+
+### 恩山论坛 Cookie
+
+浏览器登录 `https://www.right.com.cn/forum/`，复制整条 `Cookie`（关键是 Discuz 的 `xxxx_auth`、`xxxx_saltkey`、`xxxx_sid`）。
+
+## 3. 将凭证添加到仓库的 Secrets 中
+
+Settings -> Secrets and variables -> Actions -> New repository secret：
+
+Name | 必填 | 说明
+-|-|-
+`BDUSS` | 否 | 贴吧 BDUSS
+`JINGYI_COOKIE` | 否 | 精易论坛 Cookie
+`JINGYI_EMOTION` | 否 | 签到心情，默认 `kx`(开心)，可选 `ng`/`ym`/`wl`/`nu`/`ch`/`fd`/`yl`/`shuai`
+`KANXUE_COOKIE` | 否 | 看雪论坛 Cookie
+`KANXUE_CSRF` | 否 | 看雪 csrf_token，一般留空
+`ENSHAN_COOKIE` | 否 | 恩山论坛 Cookie
+`SCKEY` | 否 | PushPlus 的 token，用于微信推送
+
+至少配置一个站点，否则程序只会打印一行提示后退出。
+
+## 4. 开启 actions
+
+默认 `actions` 是处于禁止的状态，需要手动开启。
 
 ![](./assets/开启actions.gif)
 
-## 5.第一次运行actions
+## 5. 第一次运行 actions
 
-+ 自己提交一次`push`。
++ 自己提交一次 `push`。
 
-将`run.txt`中的`flag`由`0`改为`1`
+将 `run.txt` 中的 `flag` 由 `0` 改为 `1`
 
 ```patch
 - flag: 0
@@ -63,15 +99,107 @@ BDUSS | xxxxxxxxxxx
 
 ## 成功了
 
-每天早上`6:30`将会自动进行签到
+每天早上 `6:30` 将会自动进行签到。
 
-## 添加PushPlus酱推送
+# 本地运行
 
-需在Secrets中添加PushPlus的`SCKEY`，格式如下
+```shell
+# 方式一：环境变量
+export BDUSS=xxxx
+export JINGYI_COOKIE="xxxx=1; yyyy=2"
+export KANXUE_COOKIE="xxxx=1; yyyy=2"
+export ENSHAN_COOKIE="xxxx=1; yyyy=2"
+export SCKEY=xxxx
+mvn -B compile exec:java -Dexec.mainClass="top.srcrs.Run"
+```
 
-Name | Value
--|-
-SCKEY | xxxxxxxxxx
+也支持命令行直接传参（两种写法可以混用，`key=value` 会覆盖环境变量）：
+
+```shell
+# 兼容旧版的写法：第一个参数 BDUSS，第二个参数 SCKEY
+mvn -B compile exec:java -Dexec.mainClass="top.srcrs.Run" -Dexec.args="xxxx sckey"
+
+# 键值写法
+mvn -B compile exec:java -Dexec.mainClass="top.srcrs.Run" \
+  -Dexec.args="bduss=xxxx jingyi=xxxx kanxue=xxxx csrf=xxxx enshan=xxxx sckey=xxxx"
+```
+
+可用的键：`bduss`、`jingyi`、`emotion`、`kanxue`、`csrf`、`enshan`、`sckey`。
+
+# 输出示例
+
+```
+---------- 百度贴吧 开始签到 ----------
+-----第 1 轮签到开始-----
+还剩 12 贴吧需要签到
+...
+[成功] 百度贴吧：共 12 个贴吧，成功 12，失败 0（耗时 68 秒）
+---------- 精易论坛 开始签到 ----------
+[成功] 精易论坛：签到成功，获得 5 精币，连续 7 天（耗时 3 秒）
+---------- 看雪论坛 开始签到 ----------
+[已签到] 看雪论坛：今天已经签过了（耗时 1 秒）
+---------- 恩山论坛 开始签到 ----------
+[成功] 恩山论坛：签到成功，获得 3 积分（耗时 2 秒）
+
+========== 签到结果 ==========
+[成功] 百度贴吧：共 12 个贴吧，成功 12，失败 0
+[成功] 精易论坛：签到成功，获得 5 精币，连续 7 天
+[已签到] 看雪论坛：今天已经签过了
+[成功] 恩山论坛：签到成功，获得 3 积分
+------------------------------
+共 4 个站点，正常 4，失败 0
+```
+
+# 注意事项
+
++ **Cookie 会过期**，一般几周到几个月。推送里出现「Cookie 已失效」时，重新复制一次即可。
+
++ **恩山论坛前面有 WAF**。站点可能返回两种拦截页：
+  - JS 挑战（写入 `https_ydclearance`）：程序会自己解析并重试，不需要处理；
+  - 阿里云滑块验证：无法在无头环境通过，推送里会提示「被站点 WAF 拦截」，换个网络环境或稍后重试。
+
++ 贴吧签到失败时程序会自动重试 5 轮（每轮间隔 5 分钟），所以整个任务最坏情况下要跑 20 多分钟，这是原有逻辑。
+
++ 站点返回的文案会被原样带进推送，如果某个站点改版，看日志里对应的 `formhash` / `csrf_token` 那几行最容易定位问题。
+
+# 目录结构
+
+```
+src/main/java/top/srcrs
+├── Run.java                    程序入口：组装任务 -> 依次执行 -> 汇总推送
+├── core/SignTask.java          签到任务接口
+├── domain
+│   ├── Config.java             环境变量 / 命令行参数
+│   ├── Cookie.java             贴吧 BDUSS 容器
+│   └── SignResult.java         单站点签到结果
+├── task
+│   ├── TiebaTask.java          百度贴吧
+│   ├── JingyiTask.java         精易论坛
+│   ├── KanxueTask.java         看雪论坛
+│   └── EnshanTask.java         恩山论坛
+└── util
+    ├── EnshanWaf.java          恩山 WAF 的 JS 挑战解析
+    ├── Html.java               formhash / 提示信息提取
+    ├── Http.java               通用 HTTP 封装
+    ├── Cookies.java            Cookie 解析与合并
+    ├── PushPlus.java           微信推送
+    ├── Request.java            贴吧专用请求（旧）
+    └── Encryption.java         MD5
+```
+
+# 更新日志
+
+## 2026-11-10
+
++ 新增精易论坛、看雪论坛、恩山论坛签到
+
++ 重构为「任务」结构：每个站点一个 `SignTask` 实现，`Run` 只负责调度与汇总
+
++ 配置改为从环境变量读取，`Run` 的旧版位置参数仍然兼容
+
++ 修复 `slf4j-api 1.7` 与 `logback 1.3` 版本不匹配导致日志完全不输出的问题
+
++ 新增 `logback.xml`，默认 INFO 级别
 
 ## 2020-11-01
 
@@ -83,7 +211,7 @@ SCKEY | xxxxxxxxxx
 
 + 去除多用户的支持
 
-+ 增加支持server酱推送，可以推送至微信
++ 增加支持 server酱推送，可以推送至微信
 
 ## 2020-10-19
 

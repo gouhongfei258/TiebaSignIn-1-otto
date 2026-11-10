@@ -1,15 +1,14 @@
 package top.srcrs.util;
 
 import com.alibaba.fastjson.JSONObject;
-import org.apache.http.*;
+import org.apache.http.HttpEntity;
+import org.apache.http.HttpResponse;
 import org.apache.http.client.HttpClient;
 import org.apache.http.client.config.CookieSpecs;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.entity.StringEntity;
-import org.apache.http.impl.client.DefaultHttpClient;
-import org.apache.http.impl.client.HttpClientBuilder;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.util.EntityUtils;
 import org.slf4j.Logger;
@@ -18,35 +17,32 @@ import top.srcrs.domain.Cookie;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 
 /**
- * 封装的网络请求请求工具类
+ * 贴吧专用的网络请求工具类
  *
  * @author srcrs
  * @Time 2020-10-31
  */
 public class Request {
-    /**
-     * 获取日志记录器对象
-     */
+
     private static final Logger LOGGER = LoggerFactory.getLogger(Request.class);
-    /**
-     * 获取Cookie对象
-     */
-    private static Cookie cookie = Cookie.getInstance();
+
+    private static final String USER_AGENT = "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 "
+            + "(KHTML, like Gecko) Chrome/39.0.2171.71 Safari/537.36";
+
+    /** 获取 Cookie 对象 */
+    private static final Cookie COOKIE = Cookie.getInstance();
 
     private Request() {
     }
 
-    ;
-
     /**
-     * 发送get请求
+     * 发送 get 请求
      *
      * @param url 请求的地址，包括参数
-     * @return JSONObject
-     * @author srcrs
-     * @Time 2020-10-31
+     * @return JSONObject，请求失败返回 null
      */
     public static JSONObject get(String url) {
         RequestConfig defaultConfig = RequestConfig.custom().setCookieSpec(CookieSpecs.STANDARD).build();
@@ -56,34 +52,24 @@ public class Request {
         httpGet.addHeader("connection", "keep-alive");
         httpGet.addHeader("Content-Type", "application/x-www-form-urlencoded");
         httpGet.addHeader("charset", "UTF-8");
-        httpGet.addHeader("User-Agent", "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.71 Safari/537.36");
-        httpGet.addHeader("Cookie", cookie.getCookie());
-        HttpResponse resp = null;
-        String respContent = null;
+        httpGet.addHeader("User-Agent", USER_AGENT);
+        httpGet.addHeader("Cookie", COOKIE.getCookie());
         try {
-            resp = client.execute(httpGet);
-            HttpEntity entity = null;
-            if (resp.getStatusLine().getStatusCode() < 400) {
-                entity = resp.getEntity();
-            } else {
-                entity = resp.getEntity();
-            }
-            respContent = EntityUtils.toString(entity, "UTF-8");
+            HttpResponse resp = client.execute(httpGet);
+            HttpEntity entity = resp.getEntity();
+            return JSONObject.parseObject(EntityUtils.toString(entity, "UTF-8"));
         } catch (Exception e) {
-            LOGGER.info("get请求错误 -- " + e);
-        } finally {
-            return JSONObject.parseObject(respContent);
+            LOGGER.info("get请求错误 -- {}", e.toString());
+            return null;
         }
     }
 
     /**
-     * 发送post请求
+     * 发送 post 请求
      *
      * @param url  请求的地址
      * @param body 携带的参数
-     * @return JSONObject
-     * @author srcrs
-     * @Time 2020-10-31
+     * @return JSONObject，请求失败返回 null
      */
     public static JSONObject post(String url, String body) {
         StringEntity entityBody = new StringEntity(body, "UTF-8");
@@ -94,62 +80,50 @@ public class Request {
         httpPost.addHeader("Host", "tieba.baidu.com");
         httpPost.addHeader("Content-Type", "application/x-www-form-urlencoded");
         httpPost.addHeader("charset", "UTF-8");
-        httpPost.addHeader("User-Agent", "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.71 Safari/537.36");
-        httpPost.addHeader("Cookie", cookie.getCookie());
+        httpPost.addHeader("User-Agent", USER_AGENT);
+        httpPost.addHeader("Cookie", COOKIE.getCookie());
         httpPost.setEntity(entityBody);
-        HttpResponse resp = null;
-        String respContent = null;
         try {
-            resp = client.execute(httpPost);
-            HttpEntity entity = null;
-            if (resp.getStatusLine().getStatusCode() < 400) {
-                entity = resp.getEntity();
-            } else {
-                entity = resp.getEntity();
-            }
-            respContent = EntityUtils.toString(entity, "UTF-8");
+            HttpResponse resp = client.execute(httpPost);
+            HttpEntity entity = resp.getEntity();
+            return JSONObject.parseObject(EntityUtils.toString(entity, "UTF-8"));
         } catch (Exception e) {
-            LOGGER.info("post请求错误 -- " + e);
-        } finally {
-            return JSONObject.parseObject(respContent);
+            LOGGER.info("post请求错误 -- {}", e.toString());
+            return null;
         }
     }
 
     /**
-     * @param name
-     * @return Boolean
-     * @throws Exception
+     * 判断贴吧是否已失效
+     *
      * @author zsgdyf
      * @Date 2023-02-27
      */
     public static Boolean isTiebaNotExist(String name) throws Exception {
-
         String url = "https://tieba.baidu.com/f?ie=utf-8&kw=" + name + "&fr=search";
         RequestConfig defaultConfig = RequestConfig.custom().setCookieSpec(CookieSpecs.STANDARD).build();
         HttpClient client = HttpClients.custom().setDefaultRequestConfig(defaultConfig).build();
         HttpGet request = new HttpGet(url);
-
         request.addHeader("connection", "keep-alive");
         request.addHeader("Content-Type", "text/html; charset=UTF-8");
         request.addHeader("charset", "UTF-8");
-        request.addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36 Edg/110.0.1587.57");
+        request.addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                + "(KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36 Edg/110.0.1587.57");
 
         HttpResponse response = client.execute(request);
-        BufferedReader rd = new BufferedReader(
-                new InputStreamReader(response.getEntity().getContent()));
-
         StringBuilder result = new StringBuilder();
-        String line = "";
-        while ((line = rd.readLine()) != null) {
-            result.append(line);
+        try (BufferedReader rd = new BufferedReader(
+                new InputStreamReader(response.getEntity().getContent(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = rd.readLine()) != null) {
+                result.append(line);
+            }
         }
-        if(result.toString().contains("很抱歉，没有找到相关内容")){
-            LOGGER.info("{} 不存在",name);
+        if (result.toString().contains("很抱歉，没有找到相关内容")) {
+            LOGGER.info("{} 不存在", name);
             return true;
-        } else {
-            LOGGER.info("{} 存在",name);
-            return false;
         }
+        LOGGER.info("{} 存在", name);
+        return false;
     }
 }
-

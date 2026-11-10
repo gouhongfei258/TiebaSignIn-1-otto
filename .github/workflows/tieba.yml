@@ -1,4 +1,4 @@
-name: Daily Tieba Sign-In
+name: Daily Check-In
 
 on:
   workflow_dispatch:
@@ -8,6 +8,23 @@ on:
 jobs:
   signin:
     runs-on: ubuntu-latest
+    # 贴吧失败会重试 5 轮（每轮间隔 5 分钟），给足时间但不至于挂几小时
+    timeout-minutes: 60
+
+    # 统一放在 job 级别，下面所有步骤都能读到
+    env:
+      # 百度贴吧
+      BDUSS: ${{ secrets.BDUSS }}
+      # 精易论坛
+      JINGYI_COOKIE: ${{ secrets.JINGYI_COOKIE }}
+      JINGYI_EMOTION: ${{ secrets.JINGYI_EMOTION }}
+      # 看雪论坛
+      KANXUE_COOKIE: ${{ secrets.KANXUE_COOKIE }}
+      KANXUE_CSRF: ${{ secrets.KANXUE_CSRF }}
+      # 恩山论坛
+      ENSHAN_COOKIE: ${{ secrets.ENSHAN_COOKIE }}
+      # 推送
+      SCKEY: ${{ secrets.SCKEY }}
 
     steps:
       - name: Checkout code
@@ -20,11 +37,32 @@ jobs:
           java-version: '8'
           cache: 'maven'  # 使用官方推荐的 Maven 依赖缓存
 
-      - name: Build and execute
-        env:
-          BDUSS: ${{ secrets.BDUSS }}
-          SCKEY: ${{ secrets.SCKEY }}
+      # 只输出"是否配置"和字符长度，不输出内容，方便排查 Secret 名字写错或没生效
+      - name: Check secrets
         run: |
-          mvn -B compile exec:java \
-            -Dexec.mainClass="top.srcrs.Run" \
-            -Dexec.args="$BDUSS $SCKEY"
+          set -e
+          missing=0
+          for name in BDUSS JINGYI_COOKIE KANXUE_COOKIE ENSHAN_COOKIE; do
+            value="${!name}"
+            if [ -n "$value" ]; then
+              echo "::notice::$name 已配置（${#value} 字符）"
+            else
+              echo "::warning::$name 未配置，对应站点会被跳过"
+              missing=$((missing + 1))
+            fi
+          done
+
+          if [ -n "$SCKEY" ]; then
+            echo "::notice::SCKEY 已配置，结果将推送到微信"
+          else
+            echo "::notice::SCKEY 未配置，不推送"
+          fi
+
+          if [ "$missing" -eq 4 ]; then
+            echo "::error::四个站点的凭证都没读到，请检查 Secrets 名称是否与 workflow 里的一致"
+            exit 1
+          fi
+
+      - name: Build and execute
+        run: |
+          mvn -B compile exec:java -Dexec.mainClass="top.srcrs.Run"
