@@ -35,7 +35,24 @@ public class Request {
     /** 获取 Cookie 对象 */
     private static final Cookie COOKIE = Cookie.getInstance();
 
+    /** 连接超时（毫秒） */
+    private static final int CONNECT_TIMEOUT = 10_000;
+    /** 读取超时（毫秒），贴吧接口正常都在 1 秒内返回 */
+    private static final int SOCKET_TIMEOUT = 20_000;
+
     private Request() {
+    }
+
+    /**
+     * 统一配置：必须显式设置超时，否则 socket 卡住会无限等待，表现为「日志停住不动」
+     */
+    private static RequestConfig requestConfig() {
+        return RequestConfig.custom()
+                .setCookieSpec(CookieSpecs.STANDARD)
+                .setConnectTimeout(CONNECT_TIMEOUT)
+                .setSocketTimeout(SOCKET_TIMEOUT)
+                .setConnectionRequestTimeout(CONNECT_TIMEOUT)
+                .build();
     }
 
     /**
@@ -45,8 +62,7 @@ public class Request {
      * @return JSONObject，请求失败返回 null
      */
     public static JSONObject get(String url) {
-        RequestConfig defaultConfig = RequestConfig.custom().setCookieSpec(CookieSpecs.STANDARD).build();
-        HttpClient client = HttpClients.custom().setDefaultRequestConfig(defaultConfig).build();
+        HttpClient client = HttpClients.custom().setDefaultRequestConfig(requestConfig()).build();
 
         HttpGet httpGet = new HttpGet(url);
         httpGet.addHeader("connection", "keep-alive");
@@ -73,8 +89,7 @@ public class Request {
      */
     public static JSONObject post(String url, String body) {
         StringEntity entityBody = new StringEntity(body, "UTF-8");
-        RequestConfig defaultConfig = RequestConfig.custom().setCookieSpec(CookieSpecs.STANDARD).build();
-        HttpClient client = HttpClients.custom().setDefaultRequestConfig(defaultConfig).build();
+        HttpClient client = HttpClients.custom().setDefaultRequestConfig(requestConfig()).build();
         HttpPost httpPost = new HttpPost(url);
         httpPost.addHeader("connection", "keep-alive");
         httpPost.addHeader("Host", "tieba.baidu.com");
@@ -101,8 +116,7 @@ public class Request {
      */
     public static Boolean isTiebaNotExist(String name) throws Exception {
         String url = "https://tieba.baidu.com/f?ie=utf-8&kw=" + name + "&fr=search";
-        RequestConfig defaultConfig = RequestConfig.custom().setCookieSpec(CookieSpecs.STANDARD).build();
-        HttpClient client = HttpClients.custom().setDefaultRequestConfig(defaultConfig).build();
+        HttpClient client = HttpClients.custom().setDefaultRequestConfig(requestConfig()).build();
         HttpGet request = new HttpGet(url);
         request.addHeader("connection", "keep-alive");
         request.addHeader("Content-Type", "text/html; charset=UTF-8");

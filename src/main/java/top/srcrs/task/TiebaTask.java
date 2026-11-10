@@ -165,9 +165,12 @@ public class TiebaTask implements SignTask {
                 }
                 if (success.size() != followNum - invalid.size()) {
                     // 为防止短时间内多次请求接口触发风控，每轮结束后等待 5 分钟
+                    int rest = followNum - success.size();
+                    LOGGER.info("本轮结束，还有 {} 个贴吧未签到成功，等待 5 分钟后进入下一轮（期间无日志属正常）", rest);
                     Thread.sleep(1000 * 60 * 5);
                     // 重新获取 tbs，避免后续轮次全部失败
                     getTbs();
+                    LOGGER.info("等待结束，继续下一轮");
                 }
                 flag--;
             }
