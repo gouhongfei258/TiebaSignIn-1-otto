@@ -63,6 +63,19 @@ jobs:
             exit 1
           fi
 
+      # 探测各站点是否可达，用于区分「网络不通」和「代码问题」
+      - name: Check network reachability
+        continue-on-error: true
+        run: |
+          UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+          for host in bbs.ijingyi.com bbs.kanxue.com www.right.com.cn tieba.baidu.com; do
+            printf '%-22s ' "$host"
+            curl -sS -o /dev/null -m 25 -A "$UA" \
+              -w 'http=%{http_code} ip=%{remote_ip} connect=%{time_connect}s total=%{time_total}s\n' \
+              "https://$host/" 2>&1 | tail -1 || echo "unreachable"
+          done
+          echo "::notice::以上为 Actions 出口网络到各站点的实际连通情况（仅诊断用，失败不影响签到）"
+
       - name: Build and execute
         run: |
           mvn -B compile exec:java -Dexec.mainClass="top.srcrs.Run"

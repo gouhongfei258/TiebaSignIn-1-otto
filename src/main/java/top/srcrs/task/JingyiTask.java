@@ -49,7 +49,7 @@ public class JingyiTask implements SignTask {
         try {
             Http.Resp home = Http.get(BASE + "/", pageHeaders());
             if (!home.isOk() || home.getBody() == null) {
-                return SignResult.fail(getName(), "访问首页失败，HTTP " + home.getStatus());
+                return SignResult.fail(getName(), "访问首页失败：" + home.describe());
             }
             if (!Html.isLoggedIn(home.getBody())) {
                 return SignResult.fail(getName(), "Cookie 已失效，请重新获取");
@@ -70,7 +70,7 @@ public class JingyiTask implements SignTask {
 
             Http.Resp resp = Http.postForm(SIGN_URL, signHeaders(), form);
             if (!resp.isOk() || resp.getBody() == null) {
-                return SignResult.fail(getName(), "签到请求失败，HTTP " + resp.getStatus());
+                return SignResult.fail(getName(), "签到请求失败：" + resp.describe());
             }
             return parse(resp.getBody());
         } catch (Exception e) {

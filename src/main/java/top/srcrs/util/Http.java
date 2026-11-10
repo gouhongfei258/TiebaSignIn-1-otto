@@ -16,8 +16,14 @@ import org.apache.http.util.EntityUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.net.ssl.SSLException;
 import java.io.UnsupportedEncodingException;
+import java.net.ConnectException;
+import java.net.NoRouteToHostException;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.net.URLEncoder;
+import java.net.UnknownHostException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
@@ -35,6 +41,15 @@ public final class Http {
     /** 连接与读取超时（毫秒） */
     private static final int TIMEOUT = 30_000;
 
+    /** 连接层失败时的总尝试次数（含首次） */
+    private static final int MAX_ATTEMPTS = 3;
+
+    /** 重试前的等待时间（毫秒），按尝试次数递增 */
+    private static final long RETRY_BACKOFF_MS = 2_000L;
+
+    /** 连接层失败时统一使用的状态码 */
+    private static final int STATUS_NETWORK_ERROR = -1;
+
     private Http() {
     }
 
@@ -45,11 +60,18 @@ public final class Http {
         private final int status;
         private final String body;
         private final Map<String, String> cookies;
+        /** 连接层失败的原因，正常响应时为 null */
+        private final String error;
 
         Resp(int status, String body, Map<String, String> cookies) {
+            this(status, body, cookies, null);
+        }
+
+        Resp(int status, String body, Map<String, String> cookies, String error) {
             this.status = status;
             this.body = body;
             this.cookies = cookies;
+            this.error = error;
         }
 
         public int getStatus() {
@@ -64,8 +86,22 @@ public final class Http {
             return cookies;
         }
 
+        public String getError() {
+            return error;
+        }
+
         public boolean isOk() {
             return status >= 200 && status < 400;
+        }
+
+        /**
+         * 供失败信息使用的一句话描述，例如「HTTP 502」「连接超时（30 秒内未建立连接）」
+         */
+        public String describe() {
+            if (status > 0) {
+                return "HTTP " + status;
+            }
+            return error == null ? "网络请求失败（原因未知）" : error;
         }
 
         public String getCookie(String name) {
@@ -140,7 +176,35 @@ public final class Http {
         }
     }
 
+    /**
+     * 执行请求，连接层失败（超时、DNS、TLS、连接重置）时自动重试。
+     * GitHub Actions 的出口网络访问国内站点经常抖动，单次失败直接判定签到失败太草率。
+     */
     private static Resp execute(HttpRequestBase request) {
+        Resp resp = null;
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            resp = attempt(request);
+            if (resp.getStatus() != STATUS_NETWORK_ERROR) {
+                return resp;
+            }
+            if (attempt < MAX_ATTEMPTS) {
+                long backoff = RETRY_BACKOFF_MS * attempt;
+                LOGGER.warn("{} 第 {}/{} 次请求失败：{}，{} 秒后重试",
+                        request.getURI(), attempt, MAX_ATTEMPTS, resp.describe(), backoff / 1000);
+                try {
+                    Thread.sleep(backoff);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return resp;
+                }
+            }
+        }
+        LOGGER.error("{} 连续 {} 次请求失败，放弃：{}", request.getURI(), MAX_ATTEMPTS,
+                resp == null ? "未知错误" : resp.describe());
+        return resp;
+    }
+
+    private static Resp attempt(HttpRequestBase request) {
         RequestConfig config = RequestConfig.custom()
                 .setConnectTimeout(TIMEOUT)
                 .setSocketTimeout(TIMEOUT)
@@ -152,20 +216,24 @@ public final class Http {
                 .disableCookieManagement()
                 .setRedirectStrategy(new LaxRedirectStrategy())
                 .build();
+        long start = System.currentTimeMillis();
         try {
             CloseableHttpResponse response = client.execute(request);
             try {
                 int status = response.getStatusLine().getStatusCode();
                 String body = readBody(response.getEntity());
                 Map<String, String> cookies = parseCookies(response.getHeaders("Set-Cookie"));
-                LOGGER.debug("{} {} -> {}", request.getMethod(), request.getURI(), status);
+                LOGGER.debug("{} {} -> {}（{} ms）", request.getMethod(), request.getURI(), status,
+                        System.currentTimeMillis() - start);
                 return new Resp(status, body, cookies);
             } finally {
                 response.close();
             }
         } catch (Exception e) {
-            LOGGER.warn("请求异常 {} -- {}", request.getURI(), e.toString());
-            return new Resp(-1, null, new LinkedHashMap<String, String>());
+            String reason = describeException(e);
+            LOGGER.warn("请求异常 {} -- {}（耗时 {} ms）", request.getURI(), reason,
+                    System.currentTimeMillis() - start);
+            return new Resp(STATUS_NETWORK_ERROR, null, new LinkedHashMap<String, String>(), reason);
         } finally {
             try {
                 client.close();
@@ -173,6 +241,43 @@ public final class Http {
                 // 忽略关闭异常
             }
         }
+    }
+
+    /**
+     * 把底层异常翻译成能直接看懂的失败原因。
+     * 原来的实现只回一个 HTTP -1，分不清是超时、DNS 还是 TLS 问题。
+     */
+    private static String describeException(Throwable e) {
+        Throwable cause = e;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        String msg = cause.getMessage();
+        int seconds = TIMEOUT / 1000;
+
+        if (cause instanceof SocketTimeoutException) {
+            String lower = msg == null ? "" : msg.toLowerCase();
+            if (lower.contains("connect")) {
+                return "连接超时（" + seconds + " 秒内未能建立连接，通常是网络不通或站点限制了该地区访问）";
+            }
+            return "读取超时（" + seconds + " 秒内未收到响应）";
+        }
+        if (cause instanceof UnknownHostException) {
+            return "域名解析失败（" + msg + "）";
+        }
+        if (cause instanceof SSLException) {
+            return "TLS 握手失败（" + msg + "）";
+        }
+        if (cause instanceof NoRouteToHostException) {
+            return "网络不可达（" + msg + "）";
+        }
+        if (cause instanceof ConnectException) {
+            return "连接被拒绝或重置（" + msg + "）";
+        }
+        if (cause instanceof SocketException) {
+            return "连接被中断（" + msg + "）";
+        }
+        return cause.getClass().getSimpleName() + (msg == null ? "" : ": " + msg);
     }
 
     private static String readBody(HttpEntity entity) {

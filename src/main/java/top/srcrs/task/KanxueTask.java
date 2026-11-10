@@ -73,7 +73,7 @@ public class KanxueTask implements SignTask {
 
             Http.Resp resp = Http.postForm(SIGN_URL, signHeaders(csrf), form);
             if (!resp.isOk() || resp.getBody() == null) {
-                return SignResult.fail(getName(), "签到请求失败，HTTP " + resp.getStatus());
+                return SignResult.fail(getName(), "签到请求失败：" + resp.describe());
             }
             return parse(resp.getBody());
         } catch (Exception e) {
@@ -85,7 +85,7 @@ public class KanxueTask implements SignTask {
     private String fetchCsrf() {
         Http.Resp resp = Http.get(BASE + "/", pageHeaders());
         if (!resp.isOk() || resp.getBody() == null) {
-            LOGGER.warn("看雪论坛首页访问失败，HTTP {}", resp.getStatus());
+            LOGGER.warn("看雪论坛首页访问失败，{}", resp.describe());
             return null;
         }
         String body = resp.getBody();

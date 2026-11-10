@@ -35,6 +35,8 @@ public class EnshanTask implements SignTask {
 
     private String cookie;
     private String formhash;
+    /** 打开签到页面失败时的原因，用于结果里给出可排查的信息 */
+    private String lastError;
 
     public EnshanTask(String cookie) {
         this.cookie = cookie;
@@ -50,7 +52,8 @@ public class EnshanTask implements SignTask {
         try {
             String html = openSignPage();
             if (html == null) {
-                return SignResult.fail(getName(), "打开签到页面失败，可能是网络或 Cookie 问题");
+                return SignResult.fail(getName(), "打开签到页面失败："
+                        + (lastError == null ? "未知原因" : lastError));
             }
             if (Html.extractFormhash(html) == null && isSliderChallenge(html)) {
                 return SignResult.fail(getName(), "被站点 WAF 拦截（需要滑块验证），请稍后重试或更换网络环境");
@@ -69,7 +72,7 @@ public class EnshanTask implements SignTask {
 
             Http.Resp resp = Http.postForm(SIGN_URL, signHeaders(), form);
             if (!resp.isOk() || resp.getBody() == null) {
-                return SignResult.fail(getName(), "签到请求失败，HTTP " + resp.getStatus());
+                return SignResult.fail(getName(), "签到请求失败：" + resp.describe());
             }
             return parse(resp.getBody());
         } catch (Exception e) {
@@ -84,6 +87,7 @@ public class EnshanTask implements SignTask {
     private String openSignPage() {
         Http.Resp resp = Http.get(SIGN_PAGE, pageHeaders());
         if (resp.getBody() == null) {
+            lastError = resp.describe();
             return null;
         }
         cookie = Cookies.merge(cookie, resp.getCookies());
