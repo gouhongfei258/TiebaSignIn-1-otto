@@ -2,6 +2,7 @@ package top.srcrs;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import top.srcrs.core.SignTask;
 import top.srcrs.domain.Config;
 import top.srcrs.domain.SignResult;
@@ -13,17 +14,27 @@ import top.srcrs.util.PushPlus;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 程序运行开始的地方。
  *
- * <p>按配置依次执行各站点签到，最后汇总结果并通过 PushPlus 推送。</p>
+ * <p>各站点互不依赖，因此并发执行：贴吧签到大部分时间花在轮次之间的等待上，
+ * 让论坛站点同时跑，整体耗时基本等于贴吧自身的耗时。</p>
  *
  * @author srcrs
  */
 public class Run {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(Run.class);
+
+    /** 单个站点最长执行时间，超过则取消并记为超时 */
+    private static final long TASK_TIMEOUT_MINUTES = 45;
 
     public static void main(String[] args) {
         Config config = Config.load(args);
@@ -34,23 +45,14 @@ public class Run {
             return;
         }
 
-        List<SignResult> results = new ArrayList<>();
-        for (SignTask task : tasks) {
-            LOGGER.info("---------- {} 开始签到 ----------", task.getName());
-            long start = System.currentTimeMillis();
-            SignResult result;
-            try {
-                result = task.run();
-            } catch (Throwable t) {
-                LOGGER.error("{} 签到出现未捕获异常 -- {}", task.getName(), t.toString());
-                result = SignResult.fail(task.getName(), "未捕获异常：" + t);
-            }
-            LOGGER.info("{}（耗时 {} 秒）", result.toLine(), (System.currentTimeMillis() - start) / 1000);
-            results.add(result);
-        }
+        long start = System.currentTimeMillis();
+        LOGGER.info("开始执行 {} 个站点：{}（并发）", tasks.size(), joinNames(tasks));
+
+        List<SignResult> results = executeAll(tasks);
 
         String summary = buildSummary(results);
         LOGGER.info("\n{}", summary);
+        LOGGER.info("总耗时 {} 秒", (System.currentTimeMillis() - start) / 1000);
 
         if (config.hasPush()) {
             PushPlus.send(config.getPushToken(), buildTitle(results), summary);
@@ -75,6 +77,89 @@ public class Run {
             tasks.add(new EnshanTask(config.getEnshanCookie()));
         }
         return tasks;
+    }
+
+    /**
+     * 并发执行所有任务，返回顺序与传入的任务顺序一致
+     */
+    private static List<SignResult> executeAll(List<SignTask> tasks) {
+        List<SignResult> results = new ArrayList<>();
+        // 只有一个站点时没必要开线程池
+        if (tasks.size() == 1) {
+            results.add(execute(tasks.get(0)));
+            return results;
+        }
+
+        final AtomicInteger seq = new AtomicInteger();
+        ExecutorService pool = Executors.newFixedThreadPool(tasks.size(), runnable -> {
+            Thread thread = new Thread(runnable, "sign-" + seq.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        });
+
+        try {
+            List<Callable<SignResult>> callables = new ArrayList<>();
+            for (final SignTask task : tasks) {
+                callables.add(() -> execute(task));
+            }
+            List<Future<SignResult>> futures = pool.invokeAll(callables, TASK_TIMEOUT_MINUTES, TimeUnit.MINUTES);
+
+            for (int i = 0; i < futures.size(); i++) {
+                SignTask task = tasks.get(i);
+                Future<SignResult> future = futures.get(i);
+                if (future.isCancelled()) {
+                    LOGGER.error("[{}] 执行超过 {} 分钟，已取消", task.getName(), TASK_TIMEOUT_MINUTES);
+                    results.add(SignResult.fail(task.getName(),
+                            "执行超时（超过 " + TASK_TIMEOUT_MINUTES + " 分钟）"));
+                    continue;
+                }
+                try {
+                    results.add(future.get());
+                } catch (Exception e) {
+                    results.add(SignResult.fail(task.getName(), "执行异常：" + e));
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            LOGGER.error("签到任务被中断 -- {}", e.toString());
+            for (SignTask task : tasks) {
+                results.add(SignResult.fail(task.getName(), "执行被中断"));
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        return results;
+    }
+
+    /**
+     * 执行单个站点，日志通过 MDC 带上站点名，便于并发时区分来源
+     */
+    private static SignResult execute(SignTask task) {
+        MDC.put("site", task.getName());
+        long start = System.currentTimeMillis();
+        LOGGER.info("开始签到");
+        SignResult result;
+        try {
+            result = task.run();
+        } catch (Throwable t) {
+            LOGGER.error("签到出现未捕获异常 -- {}", t.toString());
+            result = SignResult.fail(task.getName(), "未捕获异常：" + t);
+        }
+        LOGGER.info("{}：{}（耗时 {} 秒）", result.getState().getLabel(), result.getMessage(),
+                (System.currentTimeMillis() - start) / 1000);
+        MDC.remove("site");
+        return result;
+    }
+
+    private static String joinNames(List<SignTask> tasks) {
+        StringBuilder sb = new StringBuilder();
+        for (SignTask task : tasks) {
+            if (sb.length() > 0) {
+                sb.append("、");
+            }
+            sb.append(task.getName());
+        }
+        return sb.toString();
     }
 
     /**

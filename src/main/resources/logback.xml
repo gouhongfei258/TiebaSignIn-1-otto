@@ -2,7 +2,8 @@
 <configuration>
     <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
-            <pattern>%d{HH:mm:ss} %-5level %msg%n</pattern>
+            <!-- 各站点并发执行，用 MDC 里的站点名区分日志来源 -->
+            <pattern>%d{HH:mm:ss} %-5level [%X{site:-main}] %msg%n</pattern>
             <charset>UTF-8</charset>
         </encoder>
     </appender>
