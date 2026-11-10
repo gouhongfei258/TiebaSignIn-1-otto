@@ -20,6 +20,7 @@ import org.slf4j.LoggerFactory;
 import javax.net.ssl.SSLException;
 import java.io.UnsupportedEncodingException;
 import java.net.ConnectException;
+import java.net.InetAddress;
 import java.net.NoRouteToHostException;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
@@ -43,10 +44,13 @@ public final class Http {
     private static final int TIMEOUT = 30_000;
 
     /** 连接层失败时的总尝试次数（含首次） */
-    private static final int MAX_ATTEMPTS = 3;
+    private static final int MAX_ATTEMPTS = 5;
 
-    /** 重试前的等待时间（毫秒），按尝试次数递增 */
+    /** 重试的初始等待时间（毫秒），之后按 2、4、8… 翻倍 */
     private static final long RETRY_BACKOFF_MS = 2_000L;
+
+    /** 单次重试的最长等待时间（毫秒） */
+    private static final long MAX_BACKOFF_MS = 16_000L;
 
     /** 连接层失败时统一使用的状态码 */
     private static final int STATUS_NETWORK_ERROR = -1;
@@ -56,6 +60,17 @@ public final class Http {
      * 用于 GitHub Actions 出口 IP 被站点拦截时走中转，不配置则为 null，行为与之前一致。
      */
     private static final HttpHost PROXY = resolveProxy();
+
+    static {
+        // JVM 默认会缓存 DNS 结果，重试时可能一直连同一个已经失效的 IP。
+        // 置零后每次请求都重新解析，代价是几毫秒，对签到这种低频场景可以忽略。
+        try {
+            java.security.Security.setProperty("networkaddress.cache.ttl", "0");
+            java.security.Security.setProperty("networkaddress.cache.negative.ttl", "0");
+        } catch (Exception e) {
+            LOGGER.debug("设置 DNS 缓存策略失败，忽略 -- {}", e.toString());
+        }
+    }
 
     private Http() {
     }
@@ -224,7 +239,7 @@ public final class Http {
                 return resp;
             }
             if (attempt < MAX_ATTEMPTS) {
-                long backoff = RETRY_BACKOFF_MS * attempt;
+                long backoff = Math.min(RETRY_BACKOFF_MS * (1L << (attempt - 1)), MAX_BACKOFF_MS);
                 LOGGER.warn("{} 第 {}/{} 次请求失败：{}，{} 秒后重试",
                         request.getURI(), attempt, MAX_ATTEMPTS, resp.describe(), backoff / 1000);
                 try {
@@ -237,7 +252,30 @@ public final class Http {
         }
         LOGGER.error("{} 连续 {} 次请求失败，放弃：{}", request.getURI(), MAX_ATTEMPTS,
                 resp == null ? "未知错误" : resp.describe());
+        String host = request.getURI().getHost();
+        if (host != null) {
+            LOGGER.error("{} 的 DNS 解析结果：{}", host, resolveHint(host));
+        }
         return resp;
+    }
+
+    /**
+     * 打印域名解析到的 IP，用于判断是解析异常还是连不通
+     */
+    private static String resolveHint(String host) {
+        try {
+            InetAddress[] addresses = InetAddress.getAllByName(host);
+            StringBuilder sb = new StringBuilder();
+            for (InetAddress address : addresses) {
+                if (sb.length() > 0) {
+                    sb.append(", ");
+                }
+                sb.append(address.getHostAddress());
+            }
+            return sb.length() == 0 ? "无记录" : sb.toString();
+        } catch (Exception e) {
+            return "解析失败（" + e.getClass().getSimpleName() + "）";
+        }
     }
 
     private static Resp attempt(HttpRequestBase request) {
