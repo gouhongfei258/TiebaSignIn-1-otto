@@ -2,6 +2,7 @@ package top.srcrs.util;
 
 import org.apache.http.Header;
 import org.apache.http.HttpEntity;
+import org.apache.http.HttpHost;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpGet;
@@ -50,7 +51,42 @@ public final class Http {
     /** 连接层失败时统一使用的状态码 */
     private static final int STATUS_NETWORK_ERROR = -1;
 
+    /**
+     * 可选代理，来自环境变量 SIGN_PROXY（形如 host:port 或 http://host:port）。
+     * 用于 GitHub Actions 出口 IP 被站点拦截时走中转，不配置则为 null，行为与之前一致。
+     */
+    private static final HttpHost PROXY = resolveProxy();
+
     private Http() {
+    }
+
+    private static HttpHost resolveProxy() {
+        String value = System.getenv("SIGN_PROXY");
+        if (value == null || value.trim().isEmpty()) {
+            return null;
+        }
+        String raw = value.trim();
+        if (raw.contains("://")) {
+            raw = raw.substring(raw.indexOf("://") + 3);
+        }
+        if (raw.contains("@")) {
+            LOGGER.warn("SIGN_PROXY 中的认证信息暂不支持，已忽略用户名密码部分");
+            raw = raw.substring(raw.lastIndexOf('@') + 1);
+        }
+        int colon = raw.lastIndexOf(':');
+        if (colon <= 0) {
+            LOGGER.warn("SIGN_PROXY 格式不正确（应形如 127.0.0.1:7890），已忽略：{}", value);
+            return null;
+        }
+        String host = raw.substring(0, colon);
+        try {
+            int port = Integer.parseInt(raw.substring(colon + 1).replaceAll("[^0-9].*$", ""));
+            LOGGER.info("已启用代理 {}:{}", host, port);
+            return new HttpHost(host, port);
+        } catch (NumberFormatException e) {
+            LOGGER.warn("SIGN_PROXY 端口不是数字，已忽略：{}", value);
+            return null;
+        }
     }
 
     /**
@@ -205,11 +241,14 @@ public final class Http {
     }
 
     private static Resp attempt(HttpRequestBase request) {
-        RequestConfig config = RequestConfig.custom()
+        RequestConfig.Builder configBuilder = RequestConfig.custom()
                 .setConnectTimeout(TIMEOUT)
                 .setSocketTimeout(TIMEOUT)
-                .setConnectionRequestTimeout(TIMEOUT)
-                .build();
+                .setConnectionRequestTimeout(TIMEOUT);
+        if (PROXY != null) {
+            configBuilder.setProxy(PROXY);
+        }
+        RequestConfig config = configBuilder.build();
         CloseableHttpClient client = HttpClients.custom()
                 .setDefaultRequestConfig(config)
                 // 关闭内置 Cookie 管理，统一由各任务自己维护 Cookie 头

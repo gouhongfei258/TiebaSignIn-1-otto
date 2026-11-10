@@ -75,6 +75,7 @@ Name | 必填 | 说明
 `KANXUE_CSRF` | 否 | 看雪 csrf_token，一般留空
 `ENSHAN_COOKIE` | 否 | 恩山论坛 Cookie
 `SCKEY` | 否 | PushPlus 的 token，用于微信推送
+`SIGN_PROXY` | 否 | 论坛请求走的代理，形如 `host:port`。Actions 出口 IP 被站点拦截时才需要
 
 至少配置一个站点，否则程序只会打印一行提示后退出。
 
@@ -161,9 +162,15 @@ mvn -B compile exec:java -Dexec.mainClass="top.srcrs.Run" \
 
 + **网络类失败会有明确原因**。以前只显示 `HTTP -1`，分不清是超时还是站点拒绝，现在会写成
   「连接超时（30 秒内未能建立连接…）」「域名解析失败」「TLS 握手失败」「连接被拒绝或重置」等，
-  并且连接层失败会自动重试 3 次（间隔 2 秒、4 秒）。GitHub Actions 的出口在境外，
-  访问国内论坛偶尔会不通——workflow 里的 `Check network reachability` 步骤会打印各站点的
-  实际连通情况（状态码、IP、耗时），先看那一步就能判断是网络问题还是代码问题。
+  并且连接层失败会自动重试 3 次（间隔 2 秒、4 秒）。
+
++ **Actions 出口 IP 可能被国内论坛拦截**。GitHub 的 runner 用的是 Azure 机房 IP，
+  国内部分论坛会对这类 IP 直接断连或丢包，表现为「访问首页失败：连接超时 / 连接被重置」。
+  workflow 里的 `Check network reachability` 步骤会打印出口 IP、各站点状态码与 curl 退出码，
+  用来区分「IP 被拦」和「代码问题」：
+  - 百度可达、只有某个论坛不可达 → 该站点针对境外/Azure IP 的限制，与代码无关；
+  - 返回 `403`/`412` 而不是连接失败 → WAF 规则拦截（不是封 IP），换 UA 或等一段时间；
+  - 确认是 IP 问题后，配置 `SIGN_PROXY` 走中转即可，代码不需要改。
 
 + **恩山论坛前面有 WAF**。站点可能返回两种拦截页：
   - JS 挑战（写入 `https_ydclearance`）：程序会自己解析并重试，不需要处理；
