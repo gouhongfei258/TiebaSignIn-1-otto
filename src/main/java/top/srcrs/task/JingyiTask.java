@@ -49,7 +49,7 @@ public class JingyiTask implements SignTask {
         try {
             Http.Resp home = Http.get(BASE + "/", pageHeaders());
             if (!home.isOk() || home.getBody() == null) {
-                return SignResult.fail(getName(), "访问首页失败：" + home.describe());
+                return SignResult.fail(getName(), "访问首页失败：" + describe(home));
             }
             if (!Html.isLoggedIn(home.getBody())) {
                 return SignResult.fail(getName(), "Cookie 已失效，请重新获取");
@@ -77,6 +77,17 @@ public class JingyiTask implements SignTask {
             LOGGER.error("精易论坛签到异常 -- {}", e.toString());
             return SignResult.fail(getName(), "签到异常：" + e.getMessage());
         }
+    }
+
+    /**
+     * 失败原因说明。3xx 说明站点在反复重定向，通常是 WAF 挑战没通过
+     */
+    private String describe(Http.Resp resp) {
+        int status = resp.getStatus();
+        if (status >= 300 && status < 400) {
+            return "站点返回 " + status + " 重定向且未能跳转成功，多半是 WAF 挑战未通过";
+        }
+        return resp.describe();
     }
 
     /**

@@ -2,7 +2,9 @@ package top.srcrs.util;
 
 import org.apache.http.Header;
 import org.apache.http.HttpEntity;
+import org.apache.http.HttpEntityEnclosingRequest;
 import org.apache.http.HttpHost;
+import org.apache.http.HttpResponse;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpGet;
@@ -12,24 +14,27 @@ import org.apache.http.entity.ContentType;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
-import org.apache.http.impl.client.LaxRedirectStrategy;
 import org.apache.http.util.EntityUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.net.ssl.SSLException;
+import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.ConnectException;
 import java.net.InetAddress;
 import java.net.NoRouteToHostException;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
+import java.net.URI;
 import java.net.URLEncoder;
 import java.net.UnknownHostException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 通用 HTTP 工具类，供各论坛签到使用
@@ -51,6 +56,9 @@ public final class Http {
 
     /** 单次重试的最长等待时间（毫秒） */
     private static final long MAX_BACKOFF_MS = 16_000L;
+
+    /** 重定向最多跟随的跳数 */
+    private static final int MAX_REDIRECTS = 5;
 
     /** 连接层失败时统一使用的状态码 */
     private static final int STATUS_NETWORK_ERROR = -1;
@@ -286,26 +294,17 @@ public final class Http {
         if (PROXY != null) {
             configBuilder.setProxy(PROXY);
         }
-        RequestConfig config = configBuilder.build();
         CloseableHttpClient client = HttpClients.custom()
-                .setDefaultRequestConfig(config)
+                .setDefaultRequestConfig(configBuilder.build())
                 // 关闭内置 Cookie 管理，统一由各任务自己维护 Cookie 头
                 .disableCookieManagement()
-                .setRedirectStrategy(new LaxRedirectStrategy())
+                // 重定向由自己处理：站点常用「302 回自身 + 下发新 Cookie」的 WAF 挑战，
+                // HttpClient 自动跟随时不带新 Cookie，会判定为循环并抛 CircularRedirectException
+                .disableRedirectHandling()
                 .build();
         long start = System.currentTimeMillis();
         try {
-            CloseableHttpResponse response = client.execute(request);
-            try {
-                int status = response.getStatusLine().getStatusCode();
-                String body = readBody(response.getEntity());
-                Map<String, String> cookies = parseCookies(response.getHeaders("Set-Cookie"));
-                LOGGER.debug("{} {} -> {}（{} ms）", request.getMethod(), request.getURI(), status,
-                        System.currentTimeMillis() - start);
-                return new Resp(status, body, cookies);
-            } finally {
-                response.close();
-            }
+            return follow(client, request, start);
         } catch (Exception e) {
             String reason = describeException(e);
             LOGGER.warn("请求异常 {} -- {}（耗时 {} ms）", request.getURI(), reason,
@@ -317,6 +316,127 @@ public final class Http {
             } catch (Exception ignored) {
                 // 忽略关闭异常
             }
+        }
+    }
+
+    /**
+     * 手动跟随重定向，每一跳都把响应里的 Set-Cookie 合并进下一次请求。
+     * 这是「302 回自身 + 下发 Cookie」这类 WAF 挑战能走出去的关键：
+     * 不带新 Cookie 的话，服务器会一直重定向回原地址。
+     */
+    private static Resp follow(CloseableHttpClient client, HttpRequestBase request, long start)
+            throws IOException {
+        // POST 等带 body 的请求不跟随，避免表单被重复提交到重定向目标
+        boolean followRedirect = !(request instanceof HttpEntityEnclosingRequest);
+        Map<String, String> cookies = new LinkedHashMap<>();
+        Set<String> visited = new HashSet<>();
+        visited.add(request.getURI().toString());
+        HttpRequestBase current = request;
+
+        for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
+            CloseableHttpResponse response = client.execute(current);
+            try {
+                int status = response.getStatusLine().getStatusCode();
+                Map<String, String> received = parseCookies(response.getHeaders("Set-Cookie"));
+                boolean cookieChanged = hasNewCookie(cookies, received);
+                cookies.putAll(received);
+
+                String location = firstHeader(response, "Location");
+                if (!followRedirect || !isRedirect(status) || location == null) {
+                    String body = readBody(response.getEntity());
+                    LOGGER.debug("{} {} -> {}（{} ms）", current.getMethod(), current.getURI(), status,
+                            System.currentTimeMillis() - start);
+                    return new Resp(status, body, cookies);
+                }
+                if (hop >= MAX_REDIRECTS) {
+                    LOGGER.warn("{} 重定向超过 {} 次，停止跟随", request.getURI(), MAX_REDIRECTS);
+                    return new Resp(status, readBody(response.getEntity()), cookies);
+                }
+
+                String next = absolute(current.getURI().toString(), location);
+                boolean seen = !visited.add(next);
+                if (seen && !cookieChanged) {
+                    // 回到同一个地址又没有新 Cookie，再跟下去只会死循环
+                    LOGGER.warn("检测到重定向循环（{}），已停止跟随", next);
+                    return new Resp(status, readBody(response.getEntity()), cookies);
+                }
+                LOGGER.debug("跟随重定向 {} -> {}（状态 {}，下发新 Cookie：{}）",
+                        current.getURI(), next, status, cookieChanged);
+                current = rebuildGet(current, next, cookies);
+            } finally {
+                response.close();
+            }
+        }
+        return new Resp(STATUS_NETWORK_ERROR, null, cookies, "重定向次数过多");
+    }
+
+    private static HttpRequestBase rebuildGet(HttpRequestBase from, String url,
+                                              Map<String, String> cookies) {
+        HttpGet get = new HttpGet(url);
+        for (Header header : from.getAllHeaders()) {
+            if ("Cookie".equalsIgnoreCase(header.getName())) {
+                continue;
+            }
+            get.setHeader(header.getName(), header.getValue());
+        }
+        String cookie = mergeCookieHeader(from.getFirstHeader("Cookie"), cookies);
+        if (cookie != null && !cookie.isEmpty()) {
+            get.setHeader("Cookie", cookie);
+        }
+        return get;
+    }
+
+    /**
+     * 把原有的 Cookie 头与响应下发的新 Cookie 合并成一条 Cookie 头
+     */
+    private static String mergeCookieHeader(Header original, Map<String, String> cookies) {
+        Map<String, String> merged = new LinkedHashMap<>();
+        if (original != null && original.getValue() != null) {
+            for (String part : original.getValue().split(";")) {
+                int eq = part.indexOf('=');
+                if (eq > 0) {
+                    merged.put(part.substring(0, eq).trim(), part.substring(eq + 1).trim());
+                }
+            }
+        }
+        merged.putAll(cookies);
+        if (merged.isEmpty()) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, String> entry : merged.entrySet()) {
+            if (sb.length() > 0) {
+                sb.append("; ");
+            }
+            sb.append(entry.getKey()).append('=').append(entry.getValue());
+        }
+        return sb.toString();
+    }
+
+    private static boolean hasNewCookie(Map<String, String> existing, Map<String, String> received) {
+        for (Map.Entry<String, String> entry : received.entrySet()) {
+            String old = existing.get(entry.getKey());
+            if (old == null || !old.equals(entry.getValue())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String firstHeader(HttpResponse response, String name) {
+        Header header = response.getFirstHeader(name);
+        return header == null ? null : header.getValue();
+    }
+
+    private static boolean isRedirect(int status) {
+        return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+    }
+
+    private static String absolute(String base, String location) {
+        try {
+            return new URI(base).resolve(location).toString();
+        } catch (Exception e) {
+            return location;
         }
     }
 
