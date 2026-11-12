@@ -49,12 +49,16 @@ public class JingyiTask implements SignTask {
         try {
             Http.Resp home = Http.get(BASE + "/", pageHeaders());
             if (isBlocked(home)) {
+                // 先确认是不是出口 IP 被拒：是的话换入口、重试都没有意义，直接结束
+                if (isIpRejected(home)) {
+                    return SignResult.fail(getName(), "当前出口 IP 被站点拒绝（返回 "
+                            + home.getStatus() + " 且跳回自身），代码层面无法绕过");
+                }
                 // 根路径被拦时换个入口再试，WAF 的规则不一定覆盖所有页面
                 LOGGER.warn("精易论坛首页返回 {}，改用备用入口 /forum.php 重试", describe(home));
                 home = Http.get(BASE + "/forum.php", pageHeaders());
             }
             if (isBlocked(home)) {
-                diagnose(home);
                 return SignResult.fail(getName(), "访问首页失败：" + describe(home));
             }
             if (!Html.isLoggedIn(home.getBody())) {
@@ -93,23 +97,33 @@ public class JingyiTask implements SignTask {
     }
 
     /**
-     * 被拦时做一次对照实验：不带 Cookie 再请求一次。
-     * 不带 Cookie 能过，说明是 Cookie 里某个字段触发了拦截；
-     * 不带 Cookie 也被拦，说明是这个出口 IP 本身被站点拒绝，换 Cookie 没用。
+     * 判断是不是出口 IP 被站点拒绝。
+     *
+     * <p>判据：站点返回 3xx，且不带 Cookie 再请求同样被拦。这种情况下换 Cookie、
+     * 换入口、加重试都没有意义，只能换出口网络。若不带 Cookie 能过，说明是 Cookie
+     * 里某个字段触发了拦截，会在日志里给出精简 Cookie 的建议。</p>
      */
-    private void diagnose(Http.Resp blocked) {
+    private boolean isIpRejected(Http.Resp blocked) {
+        int status = blocked.getStatus();
+        if (status < 300 || status >= 400) {
+            return false;
+        }
         try {
             Http.Resp plain = Http.get(BASE + "/", headers(false));
             if (!isBlocked(plain)) {
                 LOGGER.warn("精易论坛诊断：不带 Cookie 可以正常访问（HTTP {}），"
                         + "说明 Cookie 里有字段触发了拦截，建议只保留 lDlk_163c_auth / "
                         + "lDlk_163c_saltkey / lDlk_163c_sid 三项后重试", plain.getStatus());
-            } else {
-                LOGGER.warn("精易论坛诊断：不带 Cookie 同样被拦（{}），"
-                        + "说明与 Cookie 无关，是当前出口 IP 被站点拒绝", describe(plain));
+                return false;
             }
+            LOGGER.warn("精易论坛诊断：不带 Cookie 同样返回 {}，确认与 Cookie 无关，是出口 IP 被站点拒绝",
+                    plain.getStatus());
+            LOGGER.warn("精易论坛：站点按来源 IP 判定，换 Cookie / 换入口 / 重试均无效；"
+                    + "可配置 SIGN_PROXY 走国内代理，或改用国内 CI 运行");
+            return true;
         } catch (Exception e) {
             LOGGER.debug("精易论坛诊断请求失败 -- {}", e.toString());
+            return false;
         }
     }
 
