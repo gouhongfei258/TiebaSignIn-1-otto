@@ -156,6 +156,33 @@ public class JingyiTask implements SignTask {
     }
 
     /**
+     * 页面被拦时单独探一次签到接口。
+     *
+     * <p>nginx 的 301 规则常常只作用于页面（location 匹配），插件接口可能走另一套配置。
+     * 如果接口本身没被拦，配置 JINGYI_FORMHASH 就能直接签到，完全不需要访问页面。</p>
+     */
+    private void probeSignEndpoint() {
+        try {
+            Map<String, String> form = new LinkedHashMap<>();
+            form.put("formhash", "00000000");
+            form.put("submit", "1");
+            form.put("qdxq", emotion);
+            Http.Resp resp = Http.postForm(SIGN_URL, signHeaders(), form);
+            int status = resp.getStatus();
+            if (status >= 300 && status < 400) {
+                LOGGER.warn("精易论坛签到接口同样返回 {}，确认 POST 也被拦截，无法绕过", status);
+            } else if (status > 0) {
+                LOGGER.warn("精易论坛签到接口返回 HTTP {}（未被拦截），"
+                        + "配置 JINGYI_FORMHASH 后即可直接签到", status);
+            } else {
+                LOGGER.warn("精易论坛签到接口请求失败：{}", resp.describe());
+            }
+        } catch (Exception e) {
+            LOGGER.debug("精易论坛签到接口探测失败 -- {}", e.toString());
+        }
+    }
+
+    /**
      * 判断是不是出口 IP 被站点拒绝。
      *
      * <p>判据：不带 Cookie 再请求同样被拦。这种情况下换 Cookie、换入口、加重试都没有意义，
@@ -173,6 +200,7 @@ public class JingyiTask implements SignTask {
             LOGGER.warn("精易论坛：不带 Cookie 同样返回 {}，确认是出口 IP 被站点拒绝；"
                     + "换 Cookie / 换入口 / 重试均无效，可配置 SIGN_PROXY 走国内代理或改用国内 CI",
                     plain.getStatus());
+            probeSignEndpoint();
             return true;
         } catch (Exception e) {
             LOGGER.debug("精易论坛诊断请求失败 -- {}", e.toString());
