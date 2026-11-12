@@ -27,6 +27,8 @@ jobs:
       SCKEY: ${{ secrets.SCKEY }}
       # 可选：出口 IP 被站点拦截时走代理，形如 host:port 或 http://host:port
       SIGN_PROXY: ${{ secrets.SIGN_PROXY }}
+      # 可选：指定站点走哪个 IP 节点，形如 bbs.ijingyi.com=47.111.220.60
+      SIGN_DNS: ${{ secrets.SIGN_DNS }}
 
     steps:
       - name: Checkout code
@@ -62,6 +64,10 @@ jobs:
 
           if [ -n "$SIGN_PROXY" ]; then
             echo "::notice::SIGN_PROXY 已配置，论坛请求将走代理"
+          fi
+
+          if [ -n "$SIGN_DNS" ]; then
+            echo "::notice::SIGN_DNS 已配置，将覆盖指定域名的解析结果"
           fi
 
           if [ "$missing" -eq 4 ]; then

@@ -1,19 +1,24 @@
 package top.srcrs.util;
 
 import org.apache.http.Header;
+import org.apache.http.HttpConnection;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpEntityEnclosingRequest;
 import org.apache.http.HttpHost;
+import org.apache.http.HttpInetConnection;
 import org.apache.http.HttpResponse;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.client.methods.HttpRequestBase;
+import org.apache.http.client.protocol.HttpClientContext;
 import org.apache.http.entity.ContentType;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClientBuilder;
 import org.apache.http.impl.client.HttpClients;
+import org.apache.http.impl.conn.SystemDefaultDnsResolver;
 import org.apache.http.util.EntityUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,6 +28,7 @@ import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.ConnectException;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.NoRouteToHostException;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
@@ -71,6 +77,12 @@ public final class Http {
      */
     private static final HttpHost PROXY = resolveProxy();
 
+    /**
+     * 可选的 DNS 覆盖，来自环境变量 SIGN_DNS，格式 host=ip，多个用逗号分隔。
+     * 用于站点某些节点异常时指定走哪个 IP，SNI 与 Host 仍然是域名，证书校验不受影响。
+     */
+    private static final Map<String, String> DNS_OVERRIDE = resolveDnsOverride();
+
     static {
         // JVM 默认会缓存 DNS 结果，重试时可能一直连同一个已经失效的 IP。
         // 置零后每次请求都重新解析，代价是几毫秒，对签到这种低频场景可以忽略。
@@ -112,6 +124,24 @@ public final class Http {
             LOGGER.warn("SIGN_PROXY 端口不是数字，已忽略：{}", value);
             return null;
         }
+    }
+
+    private static Map<String, String> resolveDnsOverride() {
+        Map<String, String> map = new LinkedHashMap<>();
+        String value = System.getenv("SIGN_DNS");
+        if (value == null || value.trim().isEmpty()) {
+            return map;
+        }
+        for (String item : value.split(",")) {
+            int eq = item.indexOf('=');
+            if (eq > 0) {
+                map.put(item.substring(0, eq).trim(), item.substring(eq + 1).trim());
+            }
+        }
+        if (!map.isEmpty()) {
+            LOGGER.info("已启用 DNS 覆盖：{}", map);
+        }
+        return map;
     }
 
     /**
@@ -296,14 +326,27 @@ public final class Http {
         if (PROXY != null) {
             configBuilder.setProxy(PROXY);
         }
-        CloseableHttpClient client = HttpClients.custom()
+        HttpClientBuilder builder = HttpClients.custom()
                 .setDefaultRequestConfig(configBuilder.build())
                 // 关闭内置 Cookie 管理，统一由各任务自己维护 Cookie 头
                 .disableCookieManagement()
                 // 重定向由自己处理：站点常用「302 回自身 + 下发新 Cookie」的 WAF 挑战，
                 // HttpClient 自动跟随时不带新 Cookie，会判定为循环并抛 CircularRedirectException
-                .disableRedirectHandling()
-                .build();
+                .disableRedirectHandling();
+        if (!DNS_OVERRIDE.isEmpty()) {
+            builder.setDnsResolver(host -> {
+                String ip = DNS_OVERRIDE.get(host);
+                if (ip != null) {
+                    try {
+                        return new InetAddress[]{InetAddress.getByName(ip)};
+                    } catch (Exception e) {
+                        LOGGER.warn("SIGN_DNS 指定的 IP 无法使用（{}={}），改用系统解析", host, ip);
+                    }
+                }
+                return SystemDefaultDnsResolver.INSTANCE.resolve(host);
+            });
+        }
+        CloseableHttpClient client = builder.build();
         long start = System.currentTimeMillis();
         try {
             return follow(client, request, start);
@@ -338,9 +381,11 @@ public final class Http {
         HttpRequestBase current = request;
 
         for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
-            CloseableHttpResponse response = client.execute(current);
+            HttpClientContext context = HttpClientContext.create();
+            CloseableHttpResponse response = client.execute(current, context);
             try {
                 int status = response.getStatusLine().getStatusCode();
+                String remote = remoteAddress(context);
                 Map<String, String> received = parseCookies(response.getHeaders("Set-Cookie"));
                 boolean cookieChanged = hasNewCookie(cookies, received);
                 cookies.putAll(received);
@@ -349,8 +394,8 @@ public final class Http {
                 String body = readBody(response.getEntity());
 
                 if (!followRedirect || !isRedirect(status) || location == null) {
-                    LOGGER.debug("{} {} -> {}（{} ms）", current.getMethod(), current.getURI(), status,
-                            System.currentTimeMillis() - start);
+                    LOGGER.debug("{} {} -> {}（{} ms，远端 {}）", current.getMethod(), current.getURI(),
+                            status, System.currentTimeMillis() - start, remote);
                     return new Resp(status, body, cookies);
                 }
                 if (hop >= MAX_REDIRECTS) {
@@ -365,8 +410,8 @@ public final class Http {
                     // 回到同一个地址又没有新 Cookie，再跟下去只会死循环
                     LOGGER.warn("检测到重定向循环（{}），已停止跟随", next);
                     LOGGER.warn("  跳转过程：{}", String.join(" -> ", chain));
-                    LOGGER.warn("  最后一次响应：状态 {}，Location {}，Set-Cookie {}",
-                            status, location, received.isEmpty() ? "无" : received.toString());
+                    LOGGER.warn("  最后一次响应：状态 {}，远端 {}，Location {}，Set-Cookie {}",
+                            status, remote, location, received.isEmpty() ? "无" : received.toString());
                     LOGGER.warn("  响应内容片段：{}", preview(body));
                     return new Resp(status, body, cookies);
                 }
@@ -462,6 +507,25 @@ public final class Http {
         }
         String text = body.replaceAll("\\s+", " ").trim();
         return text.length() <= 300 ? text : text.substring(0, 300) + "...";
+    }
+
+    /**
+     * 取本次请求实际连接的远端地址，用于确认 Actions 解析到的是哪个节点
+     */
+    private static String remoteAddress(HttpClientContext context) {
+        try {
+            HttpConnection connection = context.getConnection();
+            if (connection instanceof HttpInetConnection) {
+                HttpInetConnection inet = (HttpInetConnection) connection;
+                InetAddress address = inet.getRemoteAddress();
+                if (address != null) {
+                    return address.getHostAddress() + ":" + inet.getRemotePort();
+                }
+            }
+        } catch (Exception ignored) {
+            // 拿不到就算了，不影响请求本身
+        }
+        return "未知";
     }
 
     /**

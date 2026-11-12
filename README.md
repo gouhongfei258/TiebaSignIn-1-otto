@@ -76,6 +76,7 @@ Name | 必填 | 说明
 `ENSHAN_COOKIE` | 否 | 恩山论坛 Cookie
 `SCKEY` | 否 | PushPlus 的 token，用于微信推送
 `SIGN_PROXY` | 否 | 论坛请求走的代理，形如 `host:port`。Actions 出口 IP 被站点拦截时才需要
+`SIGN_DNS` | 否 | 指定域名走哪个 IP，形如 `bbs.ijingyi.com=47.111.220.60`，多个用逗号分隔
 
 至少配置一个站点，否则程序只会打印一行提示后退出。
 

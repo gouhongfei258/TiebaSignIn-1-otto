@@ -54,6 +54,7 @@ public class JingyiTask implements SignTask {
                 home = Http.get(BASE + "/forum.php", pageHeaders());
             }
             if (isBlocked(home)) {
+                diagnose(home);
                 return SignResult.fail(getName(), "访问首页失败：" + describe(home));
             }
             if (!Html.isLoggedIn(home.getBody())) {
@@ -89,6 +90,27 @@ public class JingyiTask implements SignTask {
      */
     private boolean isBlocked(Http.Resp resp) {
         return resp == null || !resp.isOk() || resp.getBody() == null || resp.getStatus() >= 300;
+    }
+
+    /**
+     * 被拦时做一次对照实验：不带 Cookie 再请求一次。
+     * 不带 Cookie 能过，说明是 Cookie 里某个字段触发了拦截；
+     * 不带 Cookie 也被拦，说明是这个出口 IP 本身被站点拒绝，换 Cookie 没用。
+     */
+    private void diagnose(Http.Resp blocked) {
+        try {
+            Http.Resp plain = Http.get(BASE + "/", headers(false));
+            if (!isBlocked(plain)) {
+                LOGGER.warn("精易论坛诊断：不带 Cookie 可以正常访问（HTTP {}），"
+                        + "说明 Cookie 里有字段触发了拦截，建议只保留 lDlk_163c_auth / "
+                        + "lDlk_163c_saltkey / lDlk_163c_sid 三项后重试", plain.getStatus());
+            } else {
+                LOGGER.warn("精易论坛诊断：不带 Cookie 同样被拦（{}），"
+                        + "说明与 Cookie 无关，是当前出口 IP 被站点拒绝", describe(plain));
+            }
+        } catch (Exception e) {
+            LOGGER.debug("精易论坛诊断请求失败 -- {}", e.toString());
+        }
     }
 
     /**
@@ -182,12 +204,18 @@ public class JingyiTask implements SignTask {
     }
 
     private Map<String, String> pageHeaders() {
+        return headers(true);
+    }
+
+    private Map<String, String> headers(boolean withCookie) {
         Map<String, String> headers = new LinkedHashMap<>();
         headers.put("User-Agent", UA);
         headers.put("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
         headers.put("Accept-Language", "zh-CN,zh;q=0.9");
         headers.put("Upgrade-Insecure-Requests", "1");
-        headers.put("Cookie", cookie);
+        if (withCookie) {
+            headers.put("Cookie", cookie);
+        }
         // 补全浏览器指纹：部分 WAF 对 header 过少的请求会返回 302 挑战页，
         // 带上这些字段后更接近真实浏览器
         headers.put("sec-ch-ua", "\"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"");
