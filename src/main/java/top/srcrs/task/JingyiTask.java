@@ -218,7 +218,16 @@ public class JingyiTask implements SignTask {
         if (msg.contains("已经签到") || msg.contains("已签到")) {
             return SignResult.already(getName(), "今日已签到");
         }
+        if (msg.contains("来路不正确") || msg.contains("表单验证串")) {
+            return SignResult.fail(getName(), configuredFormhash != null
+                    ? "formhash 校验失败，JINGYI_FORMHASH 可能已过期，请重新从浏览器复制一个"
+                    : "formhash 校验失败，请稍后重试");
+        }
         if (msg.contains("需要先登录") || msg.contains("请先登录")) {
+            if (configuredFormhash != null) {
+                return SignResult.fail(getName(), "签到被拒绝，多半是 JINGYI_FORMHASH 与当前 Cookie "
+                        + "不匹配（换了 Cookie 就要重新抓一次 formhash）");
+            }
             return SignResult.fail(getName(), "Cookie 已失效，请重新获取");
         }
         if (msg.contains("成功") || msg.contains("精币") || msg.contains("签到")) {
