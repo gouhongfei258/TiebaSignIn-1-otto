@@ -31,12 +31,27 @@ public class JingyiTask implements SignTask {
     private static final String UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             + "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
+    /**
+     * 取 formhash 的备用入口。首页被拦时逐个试，
+     * nginx 的重定向规则不一定覆盖所有路径。
+     */
+    private static final String[] ENTRY_PATHS = {
+            "/",
+            "/plugin.php?id=dsu_paulsign:sign",
+            "/home.php?mod=space",
+            "/member.php?mod=logging&action=login",
+            "/forum.php"
+    };
+
     private final String cookie;
     private final String emotion;
+    /** 可选，配置后直接签到，完全不访问页面 */
+    private final String configuredFormhash;
 
-    public JingyiTask(String cookie, String emotion) {
+    public JingyiTask(String cookie, String emotion, String formhash) {
         this.cookie = cookie;
         this.emotion = (emotion == null || emotion.trim().isEmpty()) ? "kx" : emotion.trim();
+        this.configuredFormhash = (formhash == null || formhash.trim().isEmpty()) ? null : formhash.trim();
     }
 
     @Override
@@ -47,26 +62,25 @@ public class JingyiTask implements SignTask {
     @Override
     public SignResult run() {
         try {
-            Http.Resp home = Http.get(BASE + "/", pageHeaders());
-            if (isBlocked(home)) {
-                // 先确认是不是出口 IP 被拒：是的话换入口、重试都没有意义，直接结束
-                if (isIpRejected(home)) {
-                    return SignResult.fail(getName(), "当前出口 IP 被站点拒绝（返回 "
-                            + home.getStatus() + " 且跳回自身），代码层面无法绕过");
+            String formhash = configuredFormhash;
+            if (formhash != null) {
+                LOGGER.info("已配置 JINGYI_FORMHASH，跳过页面直接请求签到接口");
+            } else {
+                Http.Resp home = fetchEntryPage();
+                if (home == null) {
+                    if (isIpRejected()) {
+                        return SignResult.fail(getName(), "当前出口 IP 被站点拒绝（所有入口都返回 3xx），"
+                                + "代码层面无法绕过");
+                    }
+                    return SignResult.fail(getName(), "无法访问站点任何页面，请稍后重试");
                 }
-                // 根路径被拦时换个入口再试，WAF 的规则不一定覆盖所有页面
-                LOGGER.warn("精易论坛首页返回 {}，改用备用入口 /forum.php 重试", describe(home));
-                home = Http.get(BASE + "/forum.php", pageHeaders());
-            }
-            if (isBlocked(home)) {
-                return SignResult.fail(getName(), "访问首页失败：" + describe(home));
-            }
-            if (!Html.isLoggedIn(home.getBody())) {
-                return SignResult.fail(getName(), "Cookie 已失效，请重新获取");
-            }
-            String formhash = Html.extractFormhash(home.getBody());
-            if (formhash == null) {
-                return SignResult.fail(getName(), "已登录但未获取到 formhash，站点模板可能已变更");
+                if (!Html.isLoggedIn(home.getBody())) {
+                    return SignResult.fail(getName(), "Cookie 已失效，请重新获取");
+                }
+                formhash = Html.extractFormhash(home.getBody());
+                if (formhash == null) {
+                    return SignResult.fail(getName(), "已登录但未获取到 formhash，站点模板可能已变更");
+                }
             }
             LOGGER.info("精易论坛 formhash: {}", formhash);
 
@@ -79,6 +93,10 @@ public class JingyiTask implements SignTask {
             form.put("qdxq", emotion);
 
             Http.Resp resp = Http.postForm(SIGN_URL, signHeaders(), form);
+            if (resp.getStatus() >= 300 && resp.getStatus() < 400) {
+                return SignResult.fail(getName(), "签到接口返回 " + resp.getStatus()
+                        + " 重定向，说明 POST 请求同样被站点拦截，只能更换出口网络");
+            }
             if (!resp.isOk() || resp.getBody() == null) {
                 return SignResult.fail(getName(), "签到请求失败：" + resp.describe());
             }
@@ -97,17 +115,34 @@ public class JingyiTask implements SignTask {
     }
 
     /**
+     * 依次尝试各个入口，返回第一个能正常打开的页面
+     */
+    private Http.Resp fetchEntryPage() {
+        StringBuilder tried = new StringBuilder();
+        for (String path : ENTRY_PATHS) {
+            Http.Resp resp = Http.get(BASE + path, pageHeaders());
+            if (!isBlocked(resp)) {
+                if (!"/".equals(path)) {
+                    LOGGER.info("精易论坛首页不可用，改用 {} 获取到页面", path);
+                }
+                return resp;
+            }
+            if (tried.length() > 0) {
+                tried.append("、");
+            }
+            tried.append(path).append(" → ").append(resp.getStatus() == -1 ? "网络失败" : resp.getStatus());
+        }
+        LOGGER.warn("精易论坛所有入口都不可用：{}", tried);
+        return null;
+    }
+
+    /**
      * 判断是不是出口 IP 被站点拒绝。
      *
-     * <p>判据：站点返回 3xx，且不带 Cookie 再请求同样被拦。这种情况下换 Cookie、
-     * 换入口、加重试都没有意义，只能换出口网络。若不带 Cookie 能过，说明是 Cookie
-     * 里某个字段触发了拦截，会在日志里给出精简 Cookie 的建议。</p>
+     * <p>判据：不带 Cookie 再请求同样被拦。这种情况下换 Cookie、换入口、加重试都没有意义，
+     * 只能换出口网络。若不带 Cookie 能过，说明是 Cookie 里某个字段触发了拦截。</p>
      */
-    private boolean isIpRejected(Http.Resp blocked) {
-        int status = blocked.getStatus();
-        if (status < 300 || status >= 400) {
-            return false;
-        }
+    private boolean isIpRejected() {
         try {
             Http.Resp plain = Http.get(BASE + "/", headers(false));
             if (!isBlocked(plain)) {

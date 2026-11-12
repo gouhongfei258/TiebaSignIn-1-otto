@@ -18,6 +18,8 @@ jobs:
       # 精易论坛
       JINGYI_COOKIE: ${{ secrets.JINGYI_COOKIE }}
       JINGYI_EMOTION: ${{ secrets.JINGYI_EMOTION }}
+      # 可选：填了就用它直接签到，完全不访问页面（首页被拦时可用）
+      JINGYI_FORMHASH: ${{ secrets.JINGYI_FORMHASH }}
       # 看雪论坛
       KANXUE_COOKIE: ${{ secrets.KANXUE_COOKIE }}
       KANXUE_CSRF: ${{ secrets.KANXUE_CSRF }}

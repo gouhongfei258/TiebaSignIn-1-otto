@@ -68,7 +68,8 @@ public class Run {
             tasks.add(new TiebaTask(config.getBduss()));
         }
         if (config.hasJingyi()) {
-            tasks.add(new JingyiTask(config.getJingyiCookie(), config.getJingyiEmotion()));
+            tasks.add(new JingyiTask(config.getJingyiCookie(), config.getJingyiEmotion(),
+                    config.getJingyiFormhash()));
         }
         if (config.hasKanxue()) {
             tasks.add(new KanxueTask(config.getKanxueCookie(), config.getKanxueCsrf()));

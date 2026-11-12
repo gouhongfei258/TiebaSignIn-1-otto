@@ -23,6 +23,8 @@ public class Config {
     private String jingyiCookie;
     /** 精易论坛签到心情，默认 kx(开心) */
     private String jingyiEmotion = "kx";
+    /** 精易论坛 formhash，可选；填了就跳过首页直接签到 */
+    private String jingyiFormhash;
     /** 看雪论坛 Cookie */
     private String kanxueCookie;
     /** 看雪论坛 csrf_token，留空则自动从首页提取 */
@@ -37,6 +39,7 @@ public class Config {
         config.bduss = env("BDUSS");
         config.jingyiCookie = env("JINGYI_COOKIE", "JINGYI");
         config.jingyiEmotion = defaultIfBlank(env("JINGYI_EMOTION"), "kx");
+        config.jingyiFormhash = env("JINGYI_FORMHASH");
         config.kanxueCookie = env("KANXUE_COOKIE", "KANXUE");
         config.kanxueCsrf = env("KANXUE_CSRF", "KANXUE_CSRF_TOKEN");
         config.enshanCookie = env("ENSHAN_COOKIE", "ENSHAN");
@@ -82,6 +85,10 @@ public class Config {
             case "jingyiemotion":
                 this.jingyiEmotion = value;
                 break;
+            case "formhash":
+            case "jingyiformhash":
+                this.jingyiFormhash = value;
+                break;
             case "kanxue":
             case "kanxuecookie":
                 this.kanxueCookie = value;
@@ -110,6 +117,7 @@ public class Config {
     private void clean() {
         this.bduss = cleanCookie(this.bduss);
         this.jingyiCookie = cleanCookie(this.jingyiCookie);
+        this.jingyiFormhash = trim(this.jingyiFormhash);
         this.kanxueCookie = cleanCookie(this.kanxueCookie);
         this.kanxueCsrf = trim(this.kanxueCsrf);
         this.enshanCookie = cleanCookie(this.enshanCookie);
@@ -184,6 +192,10 @@ public class Config {
 
     public String getJingyiEmotion() {
         return jingyiEmotion;
+    }
+
+    public String getJingyiFormhash() {
+        return jingyiFormhash;
     }
 
     public String getKanxueCookie() {
