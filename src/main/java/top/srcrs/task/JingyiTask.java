@@ -47,6 +47,8 @@ public class JingyiTask implements SignTask {
     private final String emotion;
     /** 可选，配置后直接签到，完全不访问页面 */
     private final String configuredFormhash;
+    /** 本次运行是否已确认出口 IP 被站点拒绝 */
+    private boolean ipRejected;
 
     public JingyiTask(String cookie, String emotion, String formhash) {
         this.cookie = cookie;
@@ -68,12 +70,9 @@ public class JingyiTask implements SignTask {
             } else {
                 Http.Resp home = fetchEntryPage();
                 if (home == null) {
-                    if (isIpRejected()) {
-                        return SignResult.fail(getName(), "当前出口 IP 被站点拒绝，页面（GET）全部无法访问。"
-                                + "可尝试配置 JINGYI_FORMHASH 只发签到请求（POST）："
-                                + "若站点只拦截 GET，这样仍能签到成功");
-                    }
-                    return SignResult.fail(getName(), "无法访问站点任何页面，请稍后重试");
+                    return SignResult.fail(getName(), ipRejected
+                            ? "当前出口 IP 被站点拒绝（GET 与 POST 都返回 301），代码层面无法绕过，只能更换出口网络"
+                            : "无法访问站点任何页面，请稍后重试");
                 }
                 if (!Html.isLoggedIn(home.getBody())) {
                     return SignResult.fail(getName(), "Cookie 已失效，请重新获取");
@@ -118,23 +117,31 @@ public class JingyiTask implements SignTask {
     /**
      * 依次尝试各个入口，返回第一个能正常打开的页面。
      *
-     * <p>GET 全部被拦时再试一次 POST：部分站点的 301 规则只作用于 GET，
-     * POST 能拿到正常页面的话就可以继续自动提取 formhash，不需要手工配置。</p>
+     * <p>首页打不开时先判断是不是出口 IP 被拒：这种情况换路径、换请求方法都没用，
+     * 直接返回 null，由调用方给出结论，避免无意义的连续请求和刷屏。
+     * 不是 IP 问题时才逐个试其他入口，GET 全失败再试 POST。</p>
      */
     private Http.Resp fetchEntryPage() {
-        StringBuilder tried = new StringBuilder();
-        for (String path : ENTRY_PATHS) {
+        Http.Resp first = Http.get(BASE + "/", pageHeaders());
+        if (!isBlocked(first)) {
+            return first;
+        }
+        LOGGER.warn("精易论坛首页返回 {}", describe(first));
+
+        if (isIpRejected()) {
+            ipRejected = true;
+            return null;
+        }
+
+        StringBuilder tried = new StringBuilder("/").append(" → ").append(first.getStatus());
+        for (int i = 1; i < ENTRY_PATHS.length; i++) {
+            String path = ENTRY_PATHS[i];
             Http.Resp resp = Http.get(BASE + path, pageHeaders());
             if (!isBlocked(resp)) {
-                if (!"/".equals(path)) {
-                    LOGGER.info("精易论坛首页不可用，改用 {} 获取到页面", path);
-                }
+                LOGGER.info("精易论坛首页不可用，改用 {} 获取到页面", path);
                 return resp;
             }
-            if (tried.length() > 0) {
-                tried.append("、");
-            }
-            tried.append(path).append(" → ").append(resp.getStatus() == -1 ? "网络失败" : resp.getStatus());
+            tried.append("、").append(path).append(" → ").append(resp.getStatus());
         }
         LOGGER.warn("精易论坛所有 GET 入口都不可用：{}", tried);
 
@@ -163,10 +170,9 @@ public class JingyiTask implements SignTask {
                         + "lDlk_163c_saltkey / lDlk_163c_sid 三项后重试", plain.getStatus());
                 return false;
             }
-            LOGGER.warn("精易论坛诊断：不带 Cookie 同样返回 {}，确认与 Cookie 无关，是出口 IP 被站点拒绝",
+            LOGGER.warn("精易论坛：不带 Cookie 同样返回 {}，确认是出口 IP 被站点拒绝；"
+                    + "换 Cookie / 换入口 / 重试均无效，可配置 SIGN_PROXY 走国内代理或改用国内 CI",
                     plain.getStatus());
-            LOGGER.warn("精易论坛：站点按来源 IP 判定，换 Cookie / 换入口 / 重试均无效；"
-                    + "可配置 SIGN_PROXY 走国内代理，或改用国内 CI 运行");
             return true;
         } catch (Exception e) {
             LOGGER.debug("精易论坛诊断请求失败 -- {}", e.toString());
