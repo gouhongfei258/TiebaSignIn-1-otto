@@ -119,6 +119,30 @@ jobs:
           echo "  - 返回 403/412 而非连接失败 -> WAF 规则拦截（不是 IP 封禁），换 UA 或等一段时间"
           echo "::notice::以上仅为诊断信息，失败不影响后续签到"
 
+      # 精易对部分来源 IP 返回「301 到自己」，逐个试不同的请求方式，找出能过的那种
+      - name: Diagnose jingyi
+        continue-on-error: true
+        run: |
+          UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+          T='https://bbs.ijingyi.com/'
+          t() {
+            desc="$1"; shift
+            code=$(curl -sS -o /dev/null -m 20 -w '%{http_code}' "$@" "$T" 2>/dev/null || echo ERR)
+            echo "  $desc -> http=$code"
+          }
+          echo "=== 精易专项诊断（找出能过的请求方式）==="
+          t "默认" -A "$UA"
+          t "X-Forwarded-Proto" -A "$UA" -H "X-Forwarded-Proto: https"
+          t "X-Forwarded-Scheme" -A "$UA" -H "X-Forwarded-Scheme: https"
+          t "Forwarded" -A "$UA" -H "Forwarded: proto=https;host=bbs.ijingyi.com"
+          t "HTTP/2" -A "$UA" --http2
+          t "HTTP/1.0" -A "$UA" --http1.0
+          t "iPhone UA" -A 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+          t "带 Referer" -A "$UA" -H "Referer: https://www.baidu.com/"
+          t "forum.php" -A "$UA" 'https://bbs.ijingyi.com/forum.php'
+          t "www 前缀" -A "$UA" 'https://www.ijingyi.com/'
+          echo "::notice::以上均为 301 说明站点按来源 IP 拦截，只能换出口（代理或国内 CI）"
+
       - name: Build and execute
         run: |
           mvn -B compile exec:java -Dexec.mainClass="top.srcrs.Run"

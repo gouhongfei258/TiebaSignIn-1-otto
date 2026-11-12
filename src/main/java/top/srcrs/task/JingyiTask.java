@@ -226,6 +226,9 @@ public class JingyiTask implements SignTask {
         headers.put("Sec-Fetch-Site", "none");
         headers.put("Sec-Fetch-User", "?1");
         headers.put("Cache-Control", "max-age=0");
+        // 站点对部分来源 IP 会返回「301 到自己」的强制 HTTPS 跳转，
+        // 带上这个头让它知道上游已经是 https，避免再跳一次
+        headers.put("X-Forwarded-Proto", "https");
         return headers;
     }
 
