@@ -48,7 +48,12 @@ public class JingyiTask implements SignTask {
     public SignResult run() {
         try {
             Http.Resp home = Http.get(BASE + "/", pageHeaders());
-            if (!home.isOk() || home.getBody() == null) {
+            if (isBlocked(home)) {
+                // 根路径被拦时换个入口再试，WAF 的规则不一定覆盖所有页面
+                LOGGER.warn("精易论坛首页返回 {}，改用备用入口 /forum.php 重试", describe(home));
+                home = Http.get(BASE + "/forum.php", pageHeaders());
+            }
+            if (isBlocked(home)) {
                 return SignResult.fail(getName(), "访问首页失败：" + describe(home));
             }
             if (!Html.isLoggedIn(home.getBody())) {
@@ -80,9 +85,19 @@ public class JingyiTask implements SignTask {
     }
 
     /**
+     * 判断响应是否被拦住了：网络失败、非 2xx、3xx 未跳出、或者根本没有内容
+     */
+    private boolean isBlocked(Http.Resp resp) {
+        return resp == null || !resp.isOk() || resp.getBody() == null || resp.getStatus() >= 300;
+    }
+
+    /**
      * 失败原因说明。3xx 说明站点在反复重定向，通常是 WAF 挑战没通过
      */
     private String describe(Http.Resp resp) {
+        if (resp == null) {
+            return "无响应";
+        }
         int status = resp.getStatus();
         if (status >= 300 && status < 400) {
             return "站点返回 " + status + " 重定向且未能跳转成功，多半是 WAF 挑战未通过";
@@ -173,6 +188,16 @@ public class JingyiTask implements SignTask {
         headers.put("Accept-Language", "zh-CN,zh;q=0.9");
         headers.put("Upgrade-Insecure-Requests", "1");
         headers.put("Cookie", cookie);
+        // 补全浏览器指纹：部分 WAF 对 header 过少的请求会返回 302 挑战页，
+        // 带上这些字段后更接近真实浏览器
+        headers.put("sec-ch-ua", "\"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"");
+        headers.put("sec-ch-ua-mobile", "?0");
+        headers.put("sec-ch-ua-platform", "\"Windows\"");
+        headers.put("Sec-Fetch-Dest", "document");
+        headers.put("Sec-Fetch-Mode", "navigate");
+        headers.put("Sec-Fetch-Site", "none");
+        headers.put("Sec-Fetch-User", "?1");
+        headers.put("Cache-Control", "max-age=0");
         return headers;
     }
 

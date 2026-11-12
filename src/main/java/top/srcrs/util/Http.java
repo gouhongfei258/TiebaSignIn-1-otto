@@ -31,8 +31,10 @@ import java.net.URLEncoder;
 import java.net.UnknownHostException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -330,7 +332,9 @@ public final class Http {
         boolean followRedirect = !(request instanceof HttpEntityEnclosingRequest);
         Map<String, String> cookies = new LinkedHashMap<>();
         Set<String> visited = new HashSet<>();
+        List<String> chain = new ArrayList<>();
         visited.add(request.getURI().toString());
+        chain.add(request.getURI().toString());
         HttpRequestBase current = request;
 
         for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
@@ -340,17 +344,19 @@ public final class Http {
                 Map<String, String> received = parseCookies(response.getHeaders("Set-Cookie"));
                 boolean cookieChanged = hasNewCookie(cookies, received);
                 cookies.putAll(received);
-
                 String location = firstHeader(response, "Location");
+                // 响应体只能读一次，先读出来再决定怎么走
+                String body = readBody(response.getEntity());
+
                 if (!followRedirect || !isRedirect(status) || location == null) {
-                    String body = readBody(response.getEntity());
                     LOGGER.debug("{} {} -> {}（{} ms）", current.getMethod(), current.getURI(), status,
                             System.currentTimeMillis() - start);
                     return new Resp(status, body, cookies);
                 }
                 if (hop >= MAX_REDIRECTS) {
-                    LOGGER.warn("{} 重定向超过 {} 次，停止跟随", request.getURI(), MAX_REDIRECTS);
-                    return new Resp(status, readBody(response.getEntity()), cookies);
+                    LOGGER.warn("{} 重定向超过 {} 次，停止跟随：{}", request.getURI(), MAX_REDIRECTS,
+                            String.join(" -> ", chain));
+                    return new Resp(status, body, cookies);
                 }
 
                 String next = absolute(current.getURI().toString(), location);
@@ -358,10 +364,15 @@ public final class Http {
                 if (seen && !cookieChanged) {
                     // 回到同一个地址又没有新 Cookie，再跟下去只会死循环
                     LOGGER.warn("检测到重定向循环（{}），已停止跟随", next);
-                    return new Resp(status, readBody(response.getEntity()), cookies);
+                    LOGGER.warn("  跳转过程：{}", String.join(" -> ", chain));
+                    LOGGER.warn("  最后一次响应：状态 {}，Location {}，Set-Cookie {}",
+                            status, location, received.isEmpty() ? "无" : received.toString());
+                    LOGGER.warn("  响应内容片段：{}", preview(body));
+                    return new Resp(status, body, cookies);
                 }
                 LOGGER.debug("跟随重定向 {} -> {}（状态 {}，下发新 Cookie：{}）",
                         current.getURI(), next, status, cookieChanged);
+                chain.add(next);
                 current = rebuildGet(current, next, cookies);
             } finally {
                 response.close();
@@ -387,10 +398,13 @@ public final class Http {
     }
 
     /**
-     * 把原有的 Cookie 头与响应下发的新 Cookie 合并成一条 Cookie 头
+     * 把原有的 Cookie 头与响应下发的新 Cookie 合并成一条 Cookie 头。
+     * 用户显式传入的 Cookie 优先：Discuz 的 auth 是用 saltkey 加盐算出来的，
+     * 服务器在重定向时若下发新的 saltkey，直接覆盖会让 auth 与 saltkey 不匹配，登录态当场失效。
      */
     private static String mergeCookieHeader(Header original, Map<String, String> cookies) {
         Map<String, String> merged = new LinkedHashMap<>();
+        merged.putAll(cookies);
         if (original != null && original.getValue() != null) {
             for (String part : original.getValue().split(";")) {
                 int eq = part.indexOf('=');
@@ -399,7 +413,6 @@ public final class Http {
                 }
             }
         }
-        merged.putAll(cookies);
         if (merged.isEmpty()) {
             return null;
         }
@@ -438,6 +451,17 @@ public final class Http {
         } catch (Exception e) {
             return location;
         }
+    }
+
+    /**
+     * 截取响应内容片段，用于日志里看清站点到底返回了什么
+     */
+    private static String preview(String body) {
+        if (body == null || body.trim().isEmpty()) {
+            return "（空）";
+        }
+        String text = body.replaceAll("\\s+", " ").trim();
+        return text.length() <= 300 ? text : text.substring(0, 300) + "...";
     }
 
     /**
