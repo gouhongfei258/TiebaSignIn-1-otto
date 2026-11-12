@@ -69,8 +69,9 @@ public class JingyiTask implements SignTask {
                 Http.Resp home = fetchEntryPage();
                 if (home == null) {
                     if (isIpRejected()) {
-                        return SignResult.fail(getName(), "当前出口 IP 被站点拒绝（所有入口都返回 3xx），"
-                                + "代码层面无法绕过");
+                        return SignResult.fail(getName(), "当前出口 IP 被站点拒绝，页面（GET）全部无法访问。"
+                                + "可尝试配置 JINGYI_FORMHASH 只发签到请求（POST）："
+                                + "若站点只拦截 GET，这样仍能签到成功");
                     }
                     return SignResult.fail(getName(), "无法访问站点任何页面，请稍后重试");
                 }
@@ -115,7 +116,10 @@ public class JingyiTask implements SignTask {
     }
 
     /**
-     * 依次尝试各个入口，返回第一个能正常打开的页面
+     * 依次尝试各个入口，返回第一个能正常打开的页面。
+     *
+     * <p>GET 全部被拦时再试一次 POST：部分站点的 301 规则只作用于 GET，
+     * POST 能拿到正常页面的话就可以继续自动提取 formhash，不需要手工配置。</p>
      */
     private Http.Resp fetchEntryPage() {
         StringBuilder tried = new StringBuilder();
@@ -132,7 +136,15 @@ public class JingyiTask implements SignTask {
             }
             tried.append(path).append(" → ").append(resp.getStatus() == -1 ? "网络失败" : resp.getStatus());
         }
-        LOGGER.warn("精易论坛所有入口都不可用：{}", tried);
+        LOGGER.warn("精易论坛所有 GET 入口都不可用：{}", tried);
+
+        Http.Resp posted = Http.post(BASE + "/", pageHeaders(), "",
+                "application/x-www-form-urlencoded");
+        if (!isBlocked(posted) && Html.extractFormhash(posted.getBody()) != null) {
+            LOGGER.info("精易论坛 GET 被拦但 POST 可以拿到页面，改用 POST 方式提取 formhash");
+            return posted;
+        }
+        LOGGER.warn("精易论坛 POST 请求页面同样不可用：{}", describe(posted));
         return null;
     }
 
