@@ -1,5 +1,5 @@
 <div align="center"> 
-<h1 align="center">多站签到助手（贴吧 / 精易 / 看雪 / 恩山）</h1>
+<h1 align="center">多站签到助手（贴吧 / 看雪 / 恩山）</h1>
 <img src="https://img.shields.io/github/issues/srcrs/TiebaSignIn?color=green">
 <img src="https://img.shields.io/github/stars/srcrs/TiebaSignIn?color=yellow">
 <img src="https://img.shields.io/github/forks/srcrs/TiebaSignIn?color=orange">
@@ -9,7 +9,7 @@
 
 # 简介
 
-在原有贴吧签到的基础上，扩展成多站点签到工具：一次运行，依次完成**百度贴吧、精易论坛、看雪论坛、恩山论坛**的签到，并把汇总结果推送到微信。
+在原有贴吧签到的基础上，扩展成多站点签到工具：一次运行，并发完成**百度贴吧、看雪论坛、恩山论坛**的签到，并把汇总结果推送到微信。
 
 所有站点都只需要填写浏览器里已有的登录凭证（`BDUSS` 或 `Cookie`），不需要账号密码，也不需要打码平台。
 
@@ -18,11 +18,14 @@
 | 站点 | 需要的凭证 | 签到方式 |
 |-|-|-|
 | 百度贴吧 | `BDUSS` | 手机端接口，最多 200 个贴吧 |
-| 精易论坛 `bbs.ijingyi.com` | `JINGYI_COOKIE` | Discuz + dsu_paulsign 签到插件 |
 | 看雪论坛 `bbs.kanxue.com` | `KANXUE_COOKIE`（可选 `KANXUE_CSRF`） | `user-signin.htm` 接口 |
 | 恩山论坛 `www.right.com.cn` | `ENSHAN_COOKIE` | Discuz + erling_qd 签到插件（含 WAF 处理） |
 
 只配置其中一部分也可以，未配置的站点会自动跳过。
+
+> **精易论坛（`bbs.ijingyi.com`）已移除。** 该站点对 GitHub Actions 的出口 IP 一律返回
+> `301` 并跳回自身，页面、`POST` 页面、签到接口全部被拦，换 Cookie / 换 UA / 换入口均无效，
+> 代码层面无法绕过。相关实现保留在 `task/JingyiTask.java`，日后站点放开限制可重新启用。
 
 # 使用方法
 
@@ -41,13 +44,6 @@
 在网页中登录上贴吧，然后按下 `F12` 打开调试模式，在 `cookie` 中找到 `BDUSS`，并复制其 `Value` 值。
 
 ![](./assets/获取BDUSS.gif)
-
-### 精易论坛 Cookie
-
-浏览器登录 `https://bbs.ijingyi.com/`，`F12` -> Network -> 任意请求的 Request Headers，复制整条 `Cookie`。
-
-> 站点登录需要过极验滑块，所以这里不做账号密码登录，直接复用浏览器里的登录态。
-> 只要页面右上角还能看到「退出」，Cookie 就是有效的。
 
 ### 看雪论坛 Cookie
 
@@ -69,14 +65,11 @@ Settings -> Secrets and variables -> Actions -> New repository secret：
 Name | 必填 | 说明
 -|-|-
 `BDUSS` | 否 | 贴吧 BDUSS
-`JINGYI_COOKIE` | 否 | 精易论坛 Cookie
-`JINGYI_EMOTION` | 否 | 签到心情，默认 `kx`(开心)，可选 `ng`/`ym`/`wl`/`nu`/`ch`/`fd`/`yl`/`shuai`
 `KANXUE_COOKIE` | 否 | 看雪论坛 Cookie
 `KANXUE_CSRF` | 否 | 看雪 csrf_token，一般留空
 `ENSHAN_COOKIE` | 否 | 恩山论坛 Cookie
 `SCKEY` | 否 | PushPlus 的 token，用于微信推送
-`SIGN_PROXY` | 否 | 论坛请求走的代理，形如 `host:port`。Actions 出口 IP 被站点拦截时才需要
-`SIGN_DNS` | 否 | 指定域名走哪个 IP，形如 `bbs.ijingyi.com=47.111.220.60`，多个用逗号分隔
+`SIGN_PROXY` | 否 | 网络不通时走的代理，形如 `host:port`
 
 至少配置一个站点，否则程序只会打印一行提示后退出。
 
@@ -108,7 +101,6 @@ Name | 必填 | 说明
 ```shell
 # 方式一：环境变量
 export BDUSS=xxxx
-export JINGYI_COOKIE="xxxx=1; yyyy=2"
 export KANXUE_COOKIE="xxxx=1; yyyy=2"
 export ENSHAN_COOKIE="xxxx=1; yyyy=2"
 export SCKEY=xxxx
@@ -126,7 +118,7 @@ mvn -B compile exec:java -Dexec.mainClass="top.srcrs.Run" \
   -Dexec.args="bduss=xxxx jingyi=xxxx kanxue=xxxx csrf=xxxx enshan=xxxx sckey=xxxx"
 ```
 
-可用的键：`bduss`、`jingyi`、`emotion`、`kanxue`、`csrf`、`enshan`、`sckey`。
+可用的键：`bduss`、`kanxue`、`csrf`、`enshan`、`sckey`。
 
 # 输出示例
 
@@ -136,8 +128,6 @@ mvn -B compile exec:java -Dexec.mainClass="top.srcrs.Run" \
 还剩 12 贴吧需要签到
 ...
 [成功] 百度贴吧：共 12 个贴吧，成功 12，失败 0（耗时 68 秒）
----------- 精易论坛 开始签到 ----------
-[成功] 精易论坛：签到成功，获得 5 精币，连续 7 天（耗时 3 秒）
 ---------- 看雪论坛 开始签到 ----------
 [已签到] 看雪论坛：今天已经签过了（耗时 1 秒）
 ---------- 恩山论坛 开始签到 ----------
@@ -145,11 +135,10 @@ mvn -B compile exec:java -Dexec.mainClass="top.srcrs.Run" \
 
 ========== 签到结果 ==========
 [成功] 百度贴吧：共 12 个贴吧，成功 12，失败 0
-[成功] 精易论坛：签到成功，获得 5 精币，连续 7 天
 [已签到] 看雪论坛：今天已经签过了
 [成功] 恩山论坛：签到成功，获得 3 积分
 ------------------------------
-共 4 个站点，正常 4，失败 0
+共 3 个站点，正常 3，失败 0
 ```
 
 # 注意事项
@@ -166,16 +155,17 @@ mvn -B compile exec:java -Dexec.mainClass="top.srcrs.Run" \
   并且连接层失败会自动重试 5 次（间隔 2、4、8、16 秒，总计约 30 秒），
   每次重试都会重新解析 DNS，避免一直连同一个失效 IP。连续失败时会打印该域名解析到的所有 IP。
 
-+ **Actions 出口 IP 可能被国内论坛拦截**。GitHub 的 runner 用的是 Azure 机房 IP，
-  国内部分论坛会对这类 IP 直接断连或丢包，表现为「访问首页失败：连接超时 / 连接被重置」。
-  workflow 里的 `Check network reachability` 步骤会打印出口 IP、各站点状态码与 curl 退出码，
-  用来区分「IP 被拦」和「代码问题」：
-  - 百度可达、只有某个论坛不可达 → 该站点针对境外/Azure IP 的限制，与代码无关；
-  - 返回 `403`/`412` 而不是连接失败 → WAF 规则拦截（不是封 IP），换 UA 或等一段时间；
-  - 返回 `301` 且 `Location` 指回自身 → 站点按来源 IP 拒绝，换 Cookie、换 UA、换入口、
-    加重试都无效，只能更换出口网络。**精易论坛目前就是这种情况**：对 Azure 段返回
-    301 跳回自己（服务端配置问题），因此它在 GitHub Actions 上会一直失败；
-  - 确认是 IP 问题后，配置 `SIGN_PROXY` 走中转即可，代码不需要改。
++ **网络类失败会有明确原因**。以前只显示 `HTTP -1`，分不清是超时还是站点拒绝，现在会写成
+  「连接超时（30 秒内未能建立连接…）」「域名解析失败」「TLS 握手失败」「连接被拒绝或重置」等，
+  并且连接层失败会自动重试 5 次（间隔 2、4、8、16 秒，总计约 30 秒），
+  每次重试都会重新解析 DNS，避免一直连同一个失效 IP。连续失败时会打印该域名解析到的所有 IP。
+
++ **Actions 的出口 IP 可能被站点拒绝**。GitHub runner 用的是 Azure 机房 IP，个别论坛会按来源 IP
+  直接拦截。如果某个站点持续失败，先看失败文案：
+  - 「连接超时 / 连接被重置」→ 网络层问题，配置 `SIGN_PROXY` 走中转即可；
+  - 「返回 403 / 412」→ WAF 规则拦截（不是封 IP），换 UA 或等一段时间可能恢复；
+  - 「返回 301 且 Location 指回自身」→ 站点按来源 IP 拒绝，换 Cookie、换 UA、换入口、加重试
+    都无效，只能更换出口网络（这就是精易论坛被移除的原因）。
 
 + **恩山论坛前面有 WAF**。站点可能返回两种拦截页：
   - JS 挑战（写入 `https_ydclearance`）：程序会自己解析并重试，不需要处理；
@@ -188,7 +178,7 @@ mvn -B compile exec:java -Dexec.mainClass="top.srcrs.Run" \
 
 + 贴吧签到失败时程序会自动重试 5 轮（每轮间隔 5 分钟），所以贴吧任务最坏情况下要跑 20 多分钟，这是原有逻辑。
 
-+ **四个站点是并发执行的**，整体耗时约等于最慢的那个（通常就是贴吧）。并发日志每行前面带 `[站点名]` 前缀，方便区分来源；贴吧在轮次之间等待时只有它自己静默，其它站点早就跑完了。
++ **三个站点是并发执行的**，整体耗时约等于最慢的那个（通常就是贴吧）。并发日志每行前面带 `[站点名]` 前缀，方便区分来源；贴吧在轮次之间等待时只有它自己静默，其它站点早就跑完了。
 
 + 站点返回的文案会被原样带进推送，如果某个站点改版，看日志里对应的 `formhash` / `csrf_token` 那几行最容易定位问题。
 
@@ -204,7 +194,7 @@ src/main/java/top/srcrs
 │   └── SignResult.java         单站点签到结果
 ├── task
 │   ├── TiebaTask.java          百度贴吧
-│   ├── JingyiTask.java         精易论坛
+│   ├── JingyiTask.java         精易论坛（已停用，见上文说明）
 │   ├── KanxueTask.java         看雪论坛
 │   └── EnshanTask.java         恩山论坛
 └── util
@@ -218,6 +208,17 @@ src/main/java/top/srcrs
 ```
 
 # 更新日志
+
+## 2026-11-12
+
++ 移除精易论坛：站点对 GitHub Actions 出口 IP 一律返回 301 跳回自身，页面与签到接口
+  全部被拦，无法绕过。相关实现保留在 `JingyiTask.java`，日后可重新启用
+
++ 移除 workflow 中的网络探测步骤，精简日志输出
+
++ 手动跟随重定向并在每跳合并 `Set-Cookie`，修复 WAF 挑战导致的 `CircularRedirectException`
+
++ 网络类失败给出可读原因（超时 / DNS / TLS / 连接重置），连接层自动重试 5 次并清空 DNS 缓存
 
 ## 2026-11-10
 

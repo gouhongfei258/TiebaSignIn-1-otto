@@ -67,10 +67,13 @@ public class Run {
         if (config.hasTieba()) {
             tasks.add(new TiebaTask(config.getBduss()));
         }
-        if (config.hasJingyi()) {
-            tasks.add(new JingyiTask(config.getJingyiCookie(), config.getJingyiEmotion(),
-                    config.getJingyiFormhash()));
-        }
+        // 精易论坛已停用：站点对 GitHub Actions 的出口 IP 一律返回 301 跳回自身，
+        // 页面、POST 页面、签到接口全部被拦，代码层面无法绕过。
+        // JingyiTask 保留在源码里，日后站点放开限制时把下面两行注释放开即可恢复。
+        // if (config.hasJingyi()) {
+        //     tasks.add(new JingyiTask(config.getJingyiCookie(), config.getJingyiEmotion(),
+        //             config.getJingyiFormhash()));
+        // }
         if (config.hasKanxue()) {
             tasks.add(new KanxueTask(config.getKanxueCookie(), config.getKanxueCsrf()));
         }

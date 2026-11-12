@@ -15,11 +15,6 @@ jobs:
     env:
       # 百度贴吧
       BDUSS: ${{ secrets.BDUSS }}
-      # 精易论坛
-      JINGYI_COOKIE: ${{ secrets.JINGYI_COOKIE }}
-      JINGYI_EMOTION: ${{ secrets.JINGYI_EMOTION }}
-      # 可选：填了就用它直接签到，完全不访问页面（首页被拦时可用）
-      JINGYI_FORMHASH: ${{ secrets.JINGYI_FORMHASH }}
       # 看雪论坛
       KANXUE_COOKIE: ${{ secrets.KANXUE_COOKIE }}
       KANXUE_CSRF: ${{ secrets.KANXUE_CSRF }}
@@ -27,10 +22,8 @@ jobs:
       ENSHAN_COOKIE: ${{ secrets.ENSHAN_COOKIE }}
       # 推送
       SCKEY: ${{ secrets.SCKEY }}
-      # 可选：出口 IP 被站点拦截时走代理，形如 host:port 或 http://host:port
+      # 可选：网络不通时走代理，形如 host:port 或 http://host:port
       SIGN_PROXY: ${{ secrets.SIGN_PROXY }}
-      # 可选：指定站点走哪个 IP 节点，形如 bbs.ijingyi.com=47.111.220.60
-      SIGN_DNS: ${{ secrets.SIGN_DNS }}
 
     steps:
       - name: Checkout code
@@ -48,7 +41,7 @@ jobs:
         run: |
           set -e
           missing=0
-          for name in BDUSS JINGYI_COOKIE KANXUE_COOKIE ENSHAN_COOKIE; do
+          for name in BDUSS KANXUE_COOKIE ENSHAN_COOKIE; do
             value="${!name}"
             if [ -n "$value" ]; then
               echo "::notice::$name 已配置（${#value} 字符）"
@@ -65,61 +58,13 @@ jobs:
           fi
 
           if [ -n "$SIGN_PROXY" ]; then
-            echo "::notice::SIGN_PROXY 已配置，论坛请求将走代理"
+            echo "::notice::SIGN_PROXY 已配置，请求将走代理"
           fi
 
-          if [ -n "$SIGN_DNS" ]; then
-            echo "::notice::SIGN_DNS 已配置，将覆盖指定域名的解析结果"
-          fi
-
-          if [ "$missing" -eq 4 ]; then
-            echo "::error::四个站点的凭证都没读到，请检查 Secrets 名称是否与 workflow 里的一致"
+          if [ "$missing" -eq 3 ]; then
+            echo "::error::三个站点的凭证都没读到，请检查 Secrets 名称是否与 workflow 里的一致"
             exit 1
           fi
-
-      # 探测各站点是否可达，用于区分「网络不通 / IP 被拦」和「代码问题」
-      - name: Check network reachability
-        continue-on-error: true
-        run: |
-          UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-
-          echo "runner 出口 IP: $(curl -s -m 10 https://api.ipify.org || curl -s -m 10 https://ifconfig.me || echo unknown)"
-          echo
-          echo "=== HTTP 层探测 ==="
-          # 用 curl 退出码区分失败类型：6=DNS 7=拒绝 28=超时 35=TLS 52/56=连接被重置
-          for host in www.baidu.com tieba.baidu.com bbs.ijingyi.com bbs.kanxue.com www.right.com.cn; do
-            out=$(curl -sS -o /dev/null -m 25 -A "$UA" \
-              -w 'http=%{http_code} ip=%{remote_ip} connect=%{time_connect}s total=%{time_total}s' \
-              "https://$host/" 2>&1)
-            code=$?
-            case $code in
-              0)   note="可达" ;;
-              6)   note="DNS 解析失败" ;;
-              7)   note="连接被拒绝（端口不通，疑似被防火墙拦截）" ;;
-              28)  note="超时无响应（疑似 IP 被丢包/黑洞）" ;;
-              35)  note="TLS 握手失败（疑似被中间设备干扰）" ;;
-              52|56) note="连接被重置（典型的主动阻断特征）" ;;
-              *)   note="curl 退出码 $code" ;;
-            esac
-            echo "  $host -> $out [$note]"
-          done
-
-          echo
-          echo "=== TCP 443 端口探测 ==="
-          for host in bbs.ijingyi.com bbs.kanxue.com www.right.com.cn; do
-            if command -v nc >/dev/null 2>&1 && nc -z -w 5 "$host" 443 2>/dev/null; then
-              echo "  $host:443 可达"
-            else
-              echo "  $host:443 不可达（TCP 都建不起来，说明是网络层/防火墙问题，与 Cookie、代码无关）"
-            fi
-          done
-
-          echo
-          echo "判读方法："
-          echo "  - baidu 可达、只有某个论坛不可达 -> 该站点针对境外/Azure IP 的限制，与代码无关"
-          echo "  - 全部不可达 -> Actions 出口网络问题"
-          echo "  - 返回 403/412 而非连接失败 -> WAF 规则拦截（不是 IP 封禁），换 UA 或等一段时间"
-          echo "::notice::以上仅为诊断信息，失败不影响后续签到"
 
       - name: Build and execute
         run: |
